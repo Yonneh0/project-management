@@ -1,1 +1,0 @@
-File A content for diff testing
