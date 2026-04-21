@@ -307,16 +307,17 @@ mcp-project-file-management/
 ├── db.go                      # SQLite database operations (index, search, duplicates, MD5 hashing, directory stats)
 ├── watcher.go                 # File system watcher for auto-indexing (ignores .mcp_file_index.db)
 ├── newproject.go              # OpenProject/CloseProject project lifecycle with git initialization
-├── mcp_tools.go               # MCP tool registration (OpenProject, CloseProject, CreateItem, GetItem, EditItem, CopyItem, MoveItem, Search)
+├── mcp_tools.go               # MCP tool registration and path resolution helpers
 ├── mcp_args.go                # Argument extraction helpers (extractArg, extractOptional*)
-├── mcp_create.go              # CreateItem tool handler (files, directories, and archive entries)
-├── mcp_get.go                 # GetItem tool handler (read, list, info, compile, diff, archive-list actions)
+├── mcp_create.go              # CreateItem tool handler (files, directories, archive entries)
+├── mcp_get.go                 # GetItem tool handler (read, list, info, compile, diff actions)
 ├── mcp_edit.go                # EditItem tool handler (edit, delete, compress, extract actions)
 ├── mcp_copy.go                # CopyItem tool handler (files and recursive directory copy)
 ├── mcp_move.go                # MoveItem tool handler (rename/move with cross-filesystem fallback)
 ├── mcp_search.go              # Search tool handler (name, regex, grep modes)
-├── mcp_compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection and build checks)
-├── mcp_utils.go               # Utility functions (MIME detection, human-readable sizes, diff, directory copy, archive I/O, git commit)
+├── mcp_compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection)
+├── mcp_utils.go               # Utility functions (MIME detection, archive I/O, sandbox validation, git commit)
+├── sandbox_test.go            # Unit tests for sandbox security (sanitizeArchiveEntryPath, validateInSandbox)
 ├── go.mod                     # Go module definition
 ├── go.sum                     # Dependency checksums
 └── README.md                  # This file
@@ -340,6 +341,37 @@ This server uses a project context model where operations are scoped to an activ
 4. **Call `CloseProject`** when done to reset the context
 
 This ensures that operations like `CreateItem`, `CopyItem`, etc. only affect files within the active project scope.
+
+## Sandbox Security
+
+All tools enforce strict sandbox boundaries to prevent directory traversal attacks:
+
+### Path Resolution
+- All file paths are resolved relative to the open project using `resolvePathWithBoundaryCheck()`
+- Paths escaping the project root (e.g., `../secret.txt`) are rejected with "path is outside the open project" error
+- Windows drive letters are handled case-insensitively (`C:\` vs `c:\`)
+
+### Archive Entry Sanitization
+When reading/writing archives, entry names are sanitized to prevent sandbox escapes:
+- Backslashes are converted to forward slashes for cross-platform consistency
+- Path segments (`.` and `..`) are resolved before validation
+- Entries starting with `../` or containing `..` as a standalone segment are rejected
+- The sanitization function is applied in all archive operations: create, read, compress, extract
+
+### Sandbox Validation Functions
+- **`IsWithinProject(path)`**: Checks if an absolute path falls within the current project root (handles Windows drive letters)
+- **`validateInSandbox(projectPath, checkPath)`**: Validates a path is within the sandbox using normalized forward-slash comparison
+- **`sanitizeArchiveEntryPath(entryName)`**: Cleans and validates archive entry names before use
+
+### Security Guarantees
+| Operation | Sandbox Check | Archive Sanitization |
+|-----------|---------------|---------------------|
+| CreateItem | ✅ resolvePathWithBoundaryCheck | ✅ sanitizeArchiveEntryPath |
+| GetItem (read/list/info) | ✅ resolvePathWithBoundaryCheck | ✅ validateInSandbox for diff file2 |
+| EditItem (edit/delete/compress/extract) | ✅ resolvePathWithBoundaryCheck | ✅ sanitizeArchiveEntryPath |
+| CopyItem | ✅ resolvePathWithBoundaryCheck (both source & dest) | N/A |
+| MoveItem | ✅ resolvePathWithBoundaryCheck (both source & dest) | N/A |
+| Search | ✅ resolvePathWithBoundaryCheck + WalkDir boundary check | N/A |
 
 ## Data Model
 

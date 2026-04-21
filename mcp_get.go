@@ -39,6 +39,11 @@ func handleGetItem(ctx context.Context, req mcp.CallToolRequest, store *fileStor
 	startLine, hasStartLine := extractOptionalInt(req, "startLine")
 	endLine, hasEndLine := extractOptionalInt(req, "endLine")
 
+	format := "auto"
+	if v, ok := extractOptionalString(req, "format"); ok {
+		format = v
+	}
+
 	encoding, _ := extractOptionalString(req, "encoding")
 	_ = encoding
 
@@ -180,7 +185,7 @@ func handleGetItem(ctx context.Context, req mcp.CallToolRequest, store *fileStor
 		if info.IsDir() {
 			return mcp.NewToolResultError("Path is a directory. Use action='list' to view contents."), nil
 		}
-		return getItemReadAction(actualPath, info, offset, length, lineNum, hasLine, startLine, endLine, hasStartLine, hasEndLine)
+		return getItemReadAction(actualPath, info, offset, length, lineNum, hasLine, startLine, endLine, hasStartLine, hasEndLine, format)
 	case "list":
 		if isArchive && archInfo != nil {
 			return mcp.NewToolResultText(listArchiveEntries(archInfo)), nil
@@ -257,7 +262,7 @@ func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.Call
 	return mcp.NewToolResultText(sb.String()), nil
 }
 
-func getItemReadAction(filePath string, info os.FileInfo, offset int, length int, lineNum int, hasLine bool, startLine int, endLine int, hasStartLine, hasEndLine bool) (*mcp.CallToolResult, error) {
+func getItemReadAction(filePath string, info os.FileInfo, offset int, length int, lineNum int, hasLine bool, startLine int, endLine int, hasStartLine, hasEndLine bool, format string) (*mcp.CallToolResult, error) {
 	totalSize := info.Size()
 	mimeType := detectMIMEType(filePath)
 	modTime := info.ModTime().UTC().Format(time.RFC3339)
@@ -331,7 +336,6 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 	data = data[:n]
 
 	bytesRead := int64(n)
-	isBinary := strings.HasPrefix(mimeType, "image/") || (strings.HasPrefix(mimeType, "application/") && !strings.Contains(mimeType, "json") && !strings.Contains(mimeType, "xml") && mimeType != "unknown")
 
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("=== %s ===\n", filePath))
@@ -339,9 +343,22 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 	result.WriteString(fmt.Sprintf("MIME type: %s | Modified: %s | Permissions: %s\n", mimeType, modTime, perms))
 	result.WriteString(fmt.Sprintf("Offset: %d | Length requested: %d\n", offset, length))
 
-	if isBinary {
+	// Handle hex format output
+	if format == "hex" {
+		result.WriteString(fmt.Sprintf("\n--- Hex Dump (%d bytes) ---\n", bytesRead))
+		result.WriteString(toHexDump(data))
+		if int64(n) < totalSize {
+			remaining := totalSize - bytesRead
+			result.WriteString(fmt.Sprintf("\n... (%s remaining, use offset/length to read more)", humanReadableSize(remaining)))
+		}
+		return mcp.NewToolResultText(result.String()), nil
+	}
+
+	isBinary := strings.HasPrefix(mimeType, "image/") || (strings.HasPrefix(mimeType, "application/") && !strings.Contains(mimeType, "json") && !strings.Contains(mimeType, "xml") && mimeType != "unknown")
+
+	if format == "auto" && isBinary {
 		result.WriteString("\n[Binary file - content not displayed]\n")
-	} else {
+	} else if format == "auto" {
 		content := string(data)
 		lineCount := strings.Count(content, "\n") + 1
 		result.WriteString(fmt.Sprintf("Lines: %d\n\n", lineCount))
@@ -349,6 +366,13 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 		if int64(n) < totalSize {
 			remaining := totalSize - bytesRead
 			result.WriteString(fmt.Sprintf("\n\n... (%s remaining, use offset/length to read more)", humanReadableSize(remaining)))
+		}
+	} else if format == "hex" && isBinary {
+		result.WriteString(fmt.Sprintf("\n--- Hex Dump (%d bytes) ---\n", bytesRead))
+		result.WriteString(toHexDump(data))
+		if int64(n) < totalSize {
+			remaining := totalSize - bytesRead
+			result.WriteString(fmt.Sprintf("\n... (%s remaining, use offset/length to read more)", humanReadableSize(remaining)))
 		}
 	}
 
@@ -702,10 +726,28 @@ func getItemDiffAction(filePath1, filePath2 string, hasFile2 bool, rootDir strin
 		return mcp.NewToolResultError("file2 is required for diff action"), nil
 	}
 
-	if !filepath.IsAbs(filePath2) {
-		filePath2 = filepath.Join(rootDir, filePath2)
+	// Resolve and validate file2 path with boundary check
+	var resolvedFile2 string
+	if filepath.IsAbs(filePath2) {
+		resolvedFile2 = filepath.Clean(filePath2)
+	} else {
+		resolvedFile2, _ = resolvePathWithBoundaryCheck(rootDir, filePath2)
 	}
-	filePath2 = filepath.Clean(filePath2)
+	if resolvedFile2 == "" {
+		resolvedFile2 = filepath.Join(rootDir, filePath2)
+	}
+	resolvedFile2 = filepath.Clean(resolvedFile2)
+
+	// Validate file2 is within sandbox
+	pctx := GetGlobalProject()
+	if pctx != nil && pctx.Path != "" {
+		if err := validateInSandbox(pctx.Path, resolvedFile2); err != nil {
+			return mcp.NewToolResultText(fmt.Sprintf("file2 outside project sandbox: %s", filePath2)), nil
+		}
+		filePath2 = resolvedFile2
+	} else {
+		filePath2 = resolvedFile2
+	}
 
 	info1, err := os.Stat(filePath1)
 	if err != nil {

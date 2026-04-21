@@ -83,7 +83,7 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 		mcp.WithNumber("line", mcp.Description("1-based single line number to read (overrides offset/length)")),
 		mcp.WithNumber("startLine", mcp.Description("1-based start of line range (inclusive)")),
 		mcp.WithNumber("endLine", mcp.Description("1-based end of line range (inclusive)")),
-		mcp.WithString("encoding", mcp.DefaultString("utf-8"), mcp.Description("Character encoding hint")),
+		mcp.WithString("format", mcp.DefaultString("auto"), mcp.Description("Output format for read action: auto (text/binary detection), text (force text), hex (hex dump)")),
 		mcp.WithBoolean("recursive", mcp.DefaultBool(false), mcp.Description("For directories: list recursively")),
 		mcp.WithNumber("maxItems", mcp.DefaultNumber(100), mcp.Description("Maximum directory entries to return (0 = unlimited)")),
 		mcp.WithBoolean("includeHidden", mcp.DefaultBool(false), mcp.Description("Include hidden/dot files in results")),
@@ -112,14 +112,15 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 			"  extract: Extract from archive and edit in place"),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute or relative path of the target. For archives use 'archive.zip/path/entry' format.")),
 		mcp.WithString("action", mcp.DefaultString("edit"), mcp.Description("Action: edit, delete, compress, extract")),
-		mcp.WithString("oldText", mcp.Description("For action=edit: text to find and replace")),
-		mcp.WithString("newText", mcp.Description("For action=edit: replacement text")),
+		mcp.WithString("oldText", mcp.Description("For action=edit: text to find and replace (hex-encoded when format=hex)")),
+		mcp.WithString("newText", mcp.Description("For action=edit: replacement text (hex-encoded when format=hex)")),
 		mcp.WithNumber("count", mcp.DefaultNumber(1), mcp.Description("For action=edit: number of occurrences to replace (0 = all, default 1)")),
 		mcp.WithString("compressToArchive", mcp.Description("For action=compress: destination archive path (.zip, .tar.gz, etc.)")),
 		mcp.WithBoolean("deleteOriginalAfterCompress", mcp.DefaultBool(false), mcp.Description("For action=compress: delete source after compressing")),
 		mcp.WithString("extractFromArchive", mcp.Description("For action=extract: archive path to extract from (e.g., 'archive.zip/entry/path')")),
 		mcp.WithBoolean("recursive", mcp.DefaultBool(false), mcp.Description("For action=delete on directories: if true, delete all contents recursively")),
 		mcp.WithBoolean("ignoreMissing", mcp.DefaultBool(true), mcp.Description("For action=delete: return success instead of error when item doesn't exist")),
+		mcp.WithString("format", mcp.DefaultString("text"), mcp.Description("Input format for edit action: text (string matching, default) or hex (binary byte pattern replacement)")),
 	)
 
 	mcpServer.AddTool(editItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

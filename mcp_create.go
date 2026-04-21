@@ -99,6 +99,13 @@ func handleCreateInArchive(archivePath, content string, isFolder bool, overwrite
 	archFile := parts[0]
 	entryPath := parts[1]
 
+	// Sanitize entry path to prevent sandbox escapes in the archive
+	sanitizedName, sanitizeErr := sanitizeArchiveEntryPath(entryPath)
+	if sanitizeErr != nil {
+		return mcp.NewToolResultText(fmt.Sprintf("Entry path rejected (sandbox escape): %s - %v", entryPath, sanitizeErr)), nil
+	}
+	entryPath = sanitizedName
+
 	// Open or create archive
 	var archInfo *ArchiveInfo
 	if existing, err := openArchive(archFile); err == nil {
