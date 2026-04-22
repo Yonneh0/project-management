@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"bytes"
@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
-
-// ==================== Git Tool ====================
 
 type gitResult struct {
 	ExitCode int         `json:"exit_code"`
@@ -22,7 +23,7 @@ type gitResult struct {
 	Parsed   interface{} `json:"parsed,omitempty"`
 }
 
-func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore, rootDir string) (*mcp.CallToolResult, error) {
 	action, err := extractArg[string](req, "action")
 	if err != nil {
 		return mcp.NewToolResultError("missing required argument 'action'"), nil
@@ -31,11 +32,10 @@ func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, roo
 	pathStr, _ := extractOptionalString(req, "path")
 	rawArgs, _ := extractOptionalStringArray(req, "args")
 
-	// Resolve path: use provided path or open project
 	targetPath := ""
 	if pathStr != "" {
 		if !filepath.IsAbs(pathStr) {
-			pctx := GetGlobalProject()
+			pctx := core.GetGlobalProject()
 			if pctx != nil && pctx.Path != "" {
 				pathStr = filepath.Join(pctx.Path, pathStr)
 			} else {
@@ -44,7 +44,7 @@ func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, roo
 		}
 		targetPath = filepath.Clean(pathStr)
 	} else {
-		pctx := GetGlobalProject()
+		pctx := core.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			targetPath = pctx.Path
 		} else {
@@ -52,7 +52,6 @@ func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, roo
 		}
 	}
 
-	// Verify it's a git repo
 	gitDir := filepath.Join(targetPath, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		return mcp.NewToolResultError(fmt.Sprintf("not a git repository: %s", targetPath)), nil
@@ -165,7 +164,6 @@ func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, roo
 		return mcp.NewToolResultError(fmt.Sprintf("git %s failed (exit code %d)", action, result.ExitCode)), nil
 	}
 
-	// Format response based on parsed data
 	var text string
 	switch r := result.Parsed.(type) {
 	case []map[string]interface{}:
@@ -182,8 +180,6 @@ func handleGitTool(_ context.Context, req mcp.CallToolRequest, _ *fileStore, roo
 
 	return mcp.NewToolResultText(text), nil
 }
-
-// ==================== Git Action Implementations ====================
 
 func runGitCommand(dir string, args ...string) *gitResult {
 	cmd := exec.Command("git", args...)
@@ -234,7 +230,6 @@ func parseGitStatus(output string) []map[string]interface{} {
 		entry := map[string]interface{}{
 			"line": line,
 		}
-		// Parse porcelain format: "XY [HEAD -> branch] filename"
 		if len(line) >= 3 {
 			entry["indexStatus"] = string([]rune(line)[0])
 			entry["worktreeStatus"] = string([]rune(line)[1])
@@ -259,7 +254,7 @@ func gitLog(dir string, maxCount int, format string) *gitResult {
 		args = []string{"log", "--max-count", fmt.Sprintf("%d", maxCount), "--pretty=format:%H %s"}
 	case "fuller":
 		args = []string{"log", "--max-count", fmt.Sprintf("%d", maxCount), "--pretty=fuller"}
-	default: // short
+	default:
 		args = []string{"log", "--max-count", fmt.Sprintf("%d", maxCount), "--pretty=short"}
 	}
 
@@ -303,10 +298,8 @@ func gitAdd(dir string, files []string) *gitResult {
 }
 
 func gitCommit(dir string, message string, amend bool) *gitResult {
-	// Ensure git user config is set (required for commits on fresh repos)
 	configCheck := runGitCommand(dir, "config", "user.name")
 	if configCheck.ExitCode != 0 || strings.TrimSpace(configCheck.Stdout) == "" {
-		// Set default git config if not present
 		runGitCommand(dir, "config", "user.email", "mcp-tool@example.com")
 		runGitCommand(dir, "config", "user.name", "MCP Tool")
 	}
@@ -315,16 +308,12 @@ func gitCommit(dir string, message string, amend bool) *gitResult {
 	if amend {
 		args = []string{"commit", "--amend", "-m", message}
 	} else {
-		// Stage all changes before committing (so commit doesn't fail with "nothing to commit")
 		runGitCommand(dir, "add", "-A")
-		// Ignore result - we'll handle "nothing to commit" after the commit attempt
-
 		args = []string{"commit", "--no-gpg-sign", "-m", message}
 	}
 
 	result := runGitCommand(dir, args...)
 
-	// Handle "nothing to commit" gracefully - return success with informative message
 	if result.ExitCode != 0 {
 		output := strings.ToLower(result.Stdout + " " + result.Stderr)
 		if strings.Contains(output, "nothing to commit") || strings.Contains(output, "working tree clean") {
@@ -333,7 +322,6 @@ func gitCommit(dir string, message string, amend bool) *gitResult {
 				Stdout:   "Nothing to commit (working tree clean)",
 			}
 		}
-		// Check for empty message error
 		if strings.Contains(output, "empty commit message") || strings.Contains(output, "abort") {
 			return &gitResult{
 				ExitCode: result.ExitCode,
@@ -361,7 +349,6 @@ func gitPull(dir string, remote string) *gitResult {
 }
 
 func gitBranch(dir string, action string, name string) *gitResult {
-	// Treat parent action names as aliases for list (e.g., "branch" -> "list")
 	if action == "branch" || action == "list" {
 		result := runGitCommand(dir, "branch", "-v")
 		if result.ExitCode == 0 && result.Stdout != "" {
@@ -401,7 +388,6 @@ func parseGitBranchList(output string) []map[string]interface{} {
 		entry := map[string]interface{}{
 			"line": line,
 		}
-		// Current branch is marked with *
 		isCurrent := strings.HasPrefix(line, "* ")
 		entry["current"] = isCurrent
 		if !isCurrent {
@@ -420,7 +406,6 @@ func parseGitBranchList(output string) []map[string]interface{} {
 }
 
 func gitStash(dir string, action string, message string) *gitResult {
-	// Treat parent action names as aliases for list (e.g., "stash" -> "list")
 	if action == "stash" || action == "list" {
 		result := runGitCommand(dir, "stash", "list")
 		if result.ExitCode == 0 && result.Stdout != "" {
@@ -492,7 +477,6 @@ func gitClean(dir string, dryRun bool, directories bool) *gitResult {
 }
 
 func gitTag(dir string, action string, name string, message string) *gitResult {
-	// Treat parent action names as aliases for list (e.g., "tag" -> "list")
 	if action == "tag" || action == "list" {
 		result := runGitCommand(dir, "tag", "-l", "-n")
 		if result.ExitCode == 0 && result.Stdout != "" {
@@ -539,7 +523,6 @@ func parseGitTagList(output string) []map[string]interface{} {
 }
 
 func gitRemote(dir string, action string, name string, url string) *gitResult {
-	// Treat parent action names as aliases for list (e.g., "remote" -> "list")
 	if action == "remote" || action == "list" {
 		result := runGitCommand(dir, "remote", "-v")
 		if result.ExitCode == 0 && result.Stdout != "" {
@@ -610,8 +593,6 @@ func gitRevert(dir string, commit string, noCommit bool) *gitResult {
 	}
 	return runGitCommand(dir, args...)
 }
-
-// ==================== Response Formatting ====================
 
 func formatGitListResult(action string, items []map[string]interface{}) string {
 	var sb strings.Builder

@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -7,10 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-func handleEditItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleEditItem(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore, rootDir string) (*mcp.CallToolResult, error) {
 	pathStr, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("missing required argument 'path': %v", err)), nil
@@ -35,7 +38,7 @@ func handleEditItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, ro
 	recursive, _ := extractOptionalBool(req, "recursive")
 	ignoreMissing, _ := extractOptionalBool(req, "ignoreMissing")
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return mcp.NewToolResultError("no project open. Call OpenProject first."), nil
 	}
@@ -65,12 +68,10 @@ func handleEditFile(pathStr, oldText string, hasOldText bool, newText string, ha
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read file: %v", err)), nil
 	}
 
-	// Handle hex format for binary manipulation
 	if editFormat == "hex" {
 		return handleEditHex(resolvedPath, oldText, hasOldText, newText, hasNewText, countArg, contentBytes)
 	}
 
-	// Text mode (original behavior)
 	if oldText == "" {
 		return mcp.NewToolResultError("oldText cannot be empty for text edit"), nil
 	}
@@ -98,7 +99,7 @@ func handleEditFile(pathStr, oldText string, hasOldText bool, newText string, ha
 		return mcp.NewToolResultError(fmt.Sprintf("failed to write file: %v", err)), nil
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		autoCommit(pctx.Path, "edit", resolvedPath)
 	}
@@ -106,12 +107,10 @@ func handleEditFile(pathStr, oldText string, hasOldText bool, newText string, ha
 	return mcp.NewToolResultText(fmt.Sprintf("Replaced %d occurrence(s) in %s", replacedCount, filepath.Base(resolvedPath))), nil
 }
 
-// handleEditHex handles hex-encoded binary edit operations.
 func handleEditHex(filePath string, oldText string, hasOldText bool, newText string, hasNewText bool, countArg int, contentBytes []byte) (*mcp.CallToolResult, error) {
 	var oldData, newData []byte
 	var err error
 
-	// Decode oldText from hex if provided
 	if hasOldText && oldText != "" {
 		oldData, err = fromHexDump(oldText)
 		if err != nil {
@@ -122,7 +121,6 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 		}
 	}
 
-	// Decode newText from hex if provided
 	if hasNewText && newText != "" {
 		newData, err = fromHexDump(newText)
 		if err != nil {
@@ -130,7 +128,6 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 		}
 	}
 
-	// Find occurrences of oldData in content
 	var positions []int
 	if hasOldText && oldText != "" {
 		positions = binaryFindBytes(contentBytes, oldData)
@@ -138,13 +135,11 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 			return mcp.NewToolResultText(fmt.Sprintf("No occurrences of hex pattern (%d bytes) found in %s", len(oldData), filepath.Base(filePath))), nil
 		}
 
-		// Determine how many replacements to make
 		replacements := countArg
 		if replacements == 0 || replacements > len(positions) {
 			replacements = len(positions)
 		}
 
-		// Perform the replacement
 		newContent, replacedCount := binaryReplaceN(contentBytes, oldData, newData, replacements)
 
 		if newContent == nil {
@@ -159,7 +154,7 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 			return mcp.NewToolResultError(fmt.Sprintf("failed to write file: %v", err)), nil
 		}
 
-		pctx := GetGlobalProject()
+		pctx := core.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			autoCommit(pctx.Path, "edit", filePath)
 		}
@@ -167,7 +162,6 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 		resultMsg := fmt.Sprintf("Replaced %d occurrence(s) of hex pattern in %s\n", replacedCount, filepath.Base(filePath))
 		resultMsg += fmt.Sprintf("Pattern size: %d bytes | Replacement size: %d bytes\n", len(oldData), len(newData))
 
-		// Show a preview of the hex dump around first match if oldText was provided
 		if hasOldText && len(positions) > 0 {
 			resultMsg += "\nHex dump (first 64 bytes):\n"
 			end := 64
@@ -180,14 +174,13 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 		return mcp.NewToolResultText(resultMsg), nil
 	}
 
-	// If only newText is provided (no oldText), append newData at the end of file
 	if hasNewText && !hasOldText {
 		newContent := append(contentBytes, newData...)
 		if err := os.WriteFile(filePath, newContent, 0644); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to write file: %v", err)), nil
 		}
 
-		pctx := GetGlobalProject()
+		pctx := core.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			autoCommit(pctx.Path, "edit", filePath)
 		}
@@ -195,7 +188,6 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 		return mcp.NewToolResultText(fmt.Sprintf("Appended %d bytes to %s\nSize: %d → %d bytes", len(newData), filepath.Base(filePath), len(contentBytes), len(newContent))), nil
 	}
 
-	// No oldText or newText provided
 	if !hasOldText && !hasNewText {
 		return mcp.NewToolResultError("provide at least one of oldText or newText for hex edit"), nil
 	}
@@ -308,7 +300,6 @@ func handleExtractItem(pathStr, extractSrc string, rootDir string) (*mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("destination path resolution failed: %v", err)), nil
 	}
 
-	// Sanitize the entry path to prevent directory traversal escapes
 	sanitizedEntry, sanitizeErr := sanitizeArchiveEntryPath(entryPath)
 	if sanitizeErr != nil {
 		return mcp.NewToolResultText(fmt.Sprintf("Entry path rejected (sandbox escape): %s - %v", entryPath, sanitizeErr)), nil
@@ -319,7 +310,7 @@ func handleExtractItem(pathStr, extractSrc string, rootDir string) (*mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("extraction failed: %v", err)), nil
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		autoCommit(pctx.Path, "extract", resolvedDest)
 	}

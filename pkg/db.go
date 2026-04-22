@@ -1,4 +1,4 @@
-package main
+package pkg
 
 import (
 	"crypto/md5"
@@ -12,6 +12,18 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// SearchResult holds the result of a file search operation.
+type SearchResult struct {
+	Files []FileInfo `json:"files"`
+	Count int        `json:"count"`
+}
+
+// DuplicateGroup holds files that share the same MD5 hash.
+type DuplicateGroup struct {
+	MD5   string     `json:"md5"`
+	Files []FileInfo `json:"files"`
+}
 
 // FileInfo represents a single indexed file record for JSON serialization and tool results.
 type FileInfo struct {
@@ -42,14 +54,24 @@ const (
 // CompileCacheInvalidator provides a hook for invalidating the compile cache on file changes.
 type CompileCacheInvalidator func(path string)
 
-type fileStore struct {
+// DirExists checks if a directory exists at the given path.
+func DirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// FileStore is the main storage interface for indexed files.
+type FileStore struct {
 	db               *sql.DB
-	compileCache     *compileCache
+	CompileCache     *compileCache
 	cacheInvalidator CompileCacheInvalidator
 }
 
-func initDatabase(path string, _ *compileCache) (*fileStore, error) {
-	// Set the global dbFilePath so scanDirectory and the watcher can exclude it
+// InitDatabase initializes the file store and database at the given path.
+func InitDatabase(path string, cache *compileCache) (*FileStore, error) {
 	dbFilePath = path
 
 	conn, err := sql.Open("sqlite", path)
@@ -61,7 +83,7 @@ func initDatabase(path string, _ *compileCache) (*fileStore, error) {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	store := &fileStore{db: conn}
+	store := &FileStore{db: conn}
 	if err := store.scanDirectory(path); err != nil {
 		return nil, fmt.Errorf("initial scan failed: %w", err)
 	}
@@ -70,42 +92,38 @@ func initDatabase(path string, _ *compileCache) (*fileStore, error) {
 }
 
 // SetCompileCache sets the compile cache for this file store.
-func (s *fileStore) SetCompileCache(cache *compileCache) {
-	s.compileCache = cache
+func (s *FileStore) SetCompileCache(cache *compileCache) {
+	s.CompileCache = cache
 }
 
 // SetCacheInvalidator sets the cache invalidation hook.
-func (s *fileStore) SetCacheInvalidator(invalidator CompileCacheInvalidator) {
+func (s *FileStore) SetCacheInvalidator(invalidator CompileCacheInvalidator) {
 	s.cacheInvalidator = invalidator
 }
 
 // InvalidateCompileCache invalidates compile cache entries for a given path.
-func (s *fileStore) InvalidateCompileCache(path string) {
-	if s.compileCache != nil {
-		s.compileCache.invalidate(path)
+func (s *FileStore) InvalidateCompileCache(path string) {
+	if s.CompileCache != nil {
+		s.CompileCache.Invalidate(path)
 	}
 	if s.cacheInvalidator != nil {
 		s.cacheInvalidator(path)
 	}
 }
 
-// dbFilePath is set by initDatabase to exclude the DB from its own scan.
 var dbFilePath string
 
-func (s *fileStore) scanDirectory(root string) error {
+func (s *FileStore) scanDirectory(root string) error {
 	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip the database file itself
 		if dbFilePath != "" && p == dbFilePath {
 			return nil
 		}
 
 		if d.IsDir() {
-			// When scanning a directory, we upsert it with size 0 and empty MD5 initially.
-			// The updateParentDirStats function will be called later to populate its stats based on contents.
 			return s.upsertFile(p, true, 0, "", "")
 		}
 
@@ -117,12 +135,16 @@ func (s *fileStore) scanDirectory(root string) error {
 		hash, hErr := computeMD5(p)
 		if hErr != nil {
 			log.Printf("hash failed for %s: %v", p, hErr)
-			// Log failure but continue scanning other files in the directory
 			return nil
 		}
 
 		return s.upsertFile(p, false, info.Size(), info.ModTime().UTC().Format(time.RFC3339), hash)
 	})
+}
+
+// ComputeMD5 computes the MD5 hash of a file and returns it as a hex string.
+func ComputeMD5(path string) (string, error) {
+	return computeMD5(path)
 }
 
 func computeMD5(path string) (string, error) {
@@ -140,7 +162,12 @@ func computeMD5(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-func (s *fileStore) upsertFile(path string, isDir bool, size int64, modTime string, md5Hash string) error {
+// UpsertFile updates or inserts a file record into the database.
+func (s *FileStore) UpsertFile(path string, isDir bool, size int64, modTime string, md5Hash string) error {
+	return s.upsertFile(path, isDir, size, modTime, md5Hash)
+}
+
+func (s *FileStore) upsertFile(path string, isDir bool, size int64, modTime string, md5Hash string) error {
 	name := filepath.Base(path)
 	query := `INSERT INTO files (path, name, size, mod_time, md5_hash, is_dir) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET name=excluded.name, size=excluded.size, mod_time=excluded.mod_time, md5_hash=excluded.md5_hash, is_dir=excluded.is_dir`
 
@@ -148,18 +175,18 @@ func (s *fileStore) upsertFile(path string, isDir bool, size int64, modTime stri
 	return err
 }
 
-func (s *fileStore) deleteFile(path string) error {
+// DeleteFile deletes a file record from the database.
+func (s *FileStore) DeleteFile(path string) error {
+	return s.deleteFile(path)
+}
+
+func (s *FileStore) deleteFile(path string) error {
 	_, err := s.db.Exec("DELETE FROM files WHERE path = ?", path)
 	return err
 }
 
-type SearchResult struct {
-	Files []FileInfo `json:"files"`
-	Count int        `json:"count"`
-}
-
-func (s *fileStore) SearchFiles(pattern string, limit int) (*SearchResult, error) {
-	// Ensure minimum limit of 1 to prevent SQLite from returning all rows
+// SearchFiles searches for files by pattern.
+func (s *FileStore) SearchFiles(pattern string, limit int) (*SearchResult, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -185,13 +212,8 @@ func (s *fileStore) SearchFiles(pattern string, limit int) (*SearchResult, error
 	return &SearchResult{Files: results, Count: total}, nil
 }
 
-type DuplicateGroup struct {
-	MD5   string     `json:"md5"`
-	Files []FileInfo `json:"files"`
-}
-
-// FindDuplicates returns all groups of files that share the same MD5 hash and appear more than once.
-func (s *fileStore) FindDuplicates() ([]DuplicateGroup, error) {
+// FindDuplicates finds duplicate files by MD5 hash.
+func (s *FileStore) FindDuplicates() ([]DuplicateGroup, error) {
 	query := `SELECT md5_hash, path, name, size, mod_time FROM files WHERE is_dir = 0 GROUP BY md5_hash HAVING COUNT(*) > 1`
 	rows, err := s.db.Query(query)
 	if err != nil {
@@ -222,9 +244,7 @@ func (s *fileStore) FindDuplicates() ([]DuplicateGroup, error) {
 	return result, nil
 }
 
-// updateParentDirStats calculates the total size and file count for a directory path recursively
-// and updates its own record in the database. It returns an error if the path is not found or is not a directory.
-func (s *fileStore) updateParentDirStats(path string) error {
+func (s *FileStore) updateParentDirStats(path string) error {
 	var size int64
 	var name string
 	var modTime string
@@ -235,7 +255,6 @@ func (s *fileStore) updateParentDirStats(path string) error {
 		return fmt.Errorf("failed to retrieve current stats for %s: %w", path, err)
 	}
 
-	// Recalculate size and count recursively
 	var totalSize int64 = 0
 	var fileCount int = 0
 
@@ -244,10 +263,7 @@ func (s *fileStore) updateParentDirStats(path string) error {
 			return err
 		}
 
-		if d.IsDir() && p != path { // Skip the root directory itself for counting/sizing in this recursive call
-			// We don't need to update stats on subdirectories here; we just aggregate their contents up.
-			// The base case (the folder being updated) will handle its own record update.
-		} else if !d.IsDir() {
+		if !d.IsDir() {
 			info, err := d.Info()
 			if err != nil {
 				return err
@@ -262,6 +278,5 @@ func (s *fileStore) updateParentDirStats(path string) error {
 		return fmt.Errorf("failed to walk directory %s for stats: %w", path, err)
 	}
 
-	// Update the record itself using upsertFile logic (which handles INSERT/UPDATE)
 	return s.upsertFile(path, isDir, totalSize, modTime, md5Hash)
 }

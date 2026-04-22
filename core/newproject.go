@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"project-management/pkg"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -36,7 +38,7 @@ func OpenProject(rootDir, path string) (string, error) {
 		isNew = true
 	} else {
 		var err error
-		projectDir, err = ResolveRootPath(rootDir, path)
+		projectDir, err = pkg.ResolveRootPath(rootDir, path)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve project path: %w", err)
 		}
@@ -68,7 +70,7 @@ func OpenProject(rootDir, path string) (string, error) {
 
 	// Set global project context
 	nameHint := filepath.Base(projectDir)
-	globalProject = &ProjectContext{
+	pkg.GlobalProject = &pkg.ProjectContext{
 		Path:     projectDir,
 		NameHint: nameHint,
 		GitInit:  true,
@@ -78,8 +80,8 @@ func OpenProject(rootDir, path string) (string, error) {
 	return projectDir, nil
 }
 
-// handleListProjects lists available projects without opening one.
-func handleListProjects(rootDir string) (*mcp.CallToolResult, error) {
+// HandleListProjects lists available projects without opening one.
+func HandleListProjects(rootDir string) (*mcp.CallToolResult, error) {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
 		return mcp.NewToolResultText("No projects found."), nil
@@ -105,7 +107,7 @@ func handleListProjects(rootDir string) (*mcp.CallToolResult, error) {
 
 		// Check if it's a git repo
 		gitDir := filepath.Join(dirPath, ".git")
-		projectInfo["hasGit"] = dirExists(gitDir)
+		projectInfo["hasGit"] = pkg.DirExists(gitDir)
 
 		// Count files
 		fileCount := 0
@@ -136,16 +138,6 @@ func handleListProjects(rootDir string) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(fmt.Sprintf("Found %d projects:\n\n%s", len(projectInfos), string(data))), nil
 }
 
-// CloseProject resets the global project context.
-func CloseProject() {
-	globalProject = nil
-}
-
-// GetGlobalProject returns the current project context.
-func GetGlobalProject() *ProjectContext {
-	return globalProject
-}
-
 // initGitRepo initializes a local git repository in the given directory.
 func initGitRepo(dir string) error {
 	cmd := exec.Command("git", "init")
@@ -161,6 +153,11 @@ func initGitRepo(dir string) error {
 	}
 
 	return nil
+}
+
+// GetGlobalProject returns the current global project context.
+func GetGlobalProject() *pkg.ProjectContext {
+	return pkg.GlobalProject
 }
 
 // NewProject creates a new project folder with git initialized.

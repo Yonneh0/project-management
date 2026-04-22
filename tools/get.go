@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// ==================== GetItem Tool Handler ====================
-
-func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ string) (*mcp.CallToolResult, error) {
+func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore, _ string) (*mcp.CallToolResult, error) {
 	filePath, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -44,8 +45,7 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ s
 		format = v
 	}
 
-	encoding, _ := extractOptionalString(req, "encoding")
-	_ = encoding
+	_, _ = extractOptionalString(req, "encoding")
 
 	recursive := false
 	if v, ok := extractOptionalBool(req, "recursive"); ok {
@@ -91,35 +91,29 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ s
 		noCache = v
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return mcp.NewToolResultError("no project open. Call OpenProject first."), nil
 	}
 
-	// Resolve path with boundary check (also handles archive paths)
 	var isArchive bool
-	var archInfo *ArchiveInfo
-	var actualPath string
+	var archInfo *pkg.ArchiveInfo
 
 	resolvedPath, err := resolvePathWithBoundaryCheck(pctx.Path, filePath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("path resolution failed: %v", err)), nil
 	}
 
-	// Check for archive path format (archive.zip/entry/path)
 	archFile, entryPath, ok := resolveArchivePath(resolvedPath)
 	if ok {
 		ai, ae := openArchive(archFile)
 		if ae == nil {
 			isArchive = true
 			archInfo = ai
-			actualPath = resolvedPath
-		} else {
-			actualPath = resolvedPath
 		}
-	} else {
-		actualPath = resolvedPath
 	}
+
+	actualPath := resolvedPath
 
 	info, err := os.Stat(actualPath)
 	if err != nil {
@@ -143,8 +137,7 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ s
 
 	switch action {
 	case "archive-list":
-		// If archInfo is nil but path looks like an archive, try to open it directly
-		if archInfo == nil && IsArchiveFile(actualPath) || GetArchiveFormat(actualPath) != "" {
+		if archInfo == nil && pkg.IsArchiveFile(actualPath) || pkg.GetArchiveFormat(actualPath) != "" {
 			detectedArch, detErr := openArchive(actualPath)
 			if detErr == nil {
 				return mcp.NewToolResultText(listArchiveEntries(detectedArch)), nil
@@ -223,15 +216,12 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ s
 	}
 }
 
-// ==================== GetItem Helper Functions ====================
-
 func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.CallToolResult, error) {
 	mimeType := "unknown"
 	fileSize := int64(0)
 	modTime := info.ModTime().UTC().Format(time.RFC3339)
 	createdTime := modTime
 	perms := formatPermissions(info)
-	unixPerms := getUnixPermissions(info)
 
 	isHidden := strings.HasPrefix(info.Name(), ".")
 	readable := true
@@ -255,14 +245,14 @@ func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.Call
 	sb.WriteString(fmt.Sprintf("Type: %s | Name: %s\n", map[bool]string{true: "directory", false: "file"}[isDir], info.Name()))
 	sb.WriteString(fmt.Sprintf("Size: %s (%d bytes)\n", humanReadableSize(fileSize), fileSize))
 	sb.WriteString(fmt.Sprintf("MIME type: %s\n", mimeType))
-	sb.WriteString(fmt.Sprintf("Permissions: %s (unix: %s)\n", perms, unixPerms))
+	sb.WriteString(fmt.Sprintf("Permissions: %s (unix: %s)\n", perms, getUnixPermissions(info)))
 	sb.WriteString(fmt.Sprintf("Readable: %v | Writable: %v\n", readable, writable))
 	sb.WriteString(fmt.Sprintf("Hidden: %v\n", isHidden))
 	sb.WriteString(fmt.Sprintf("Created: %s\n", createdTime))
 	sb.WriteString(fmt.Sprintf("Modified: %s\n", modTime))
 
 	if !isDir {
-		md5Hash, _ := computeMD5(filePath)
+		md5Hash, _ := pkg.ComputeMD5(filePath)
 		sb.WriteString(fmt.Sprintf("MD5 hash: %s\n", md5Hash))
 	}
 
@@ -350,7 +340,6 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 	result.WriteString(fmt.Sprintf("MIME type: %s | Modified: %s | Permissions: %s\n", mimeType, modTime, perms))
 	result.WriteString(fmt.Sprintf("Offset: %d | Length requested: %d\n", offset, length))
 
-	// Handle hex format output
 	if format == "hex" {
 		result.WriteString(fmt.Sprintf("\n--- Hex Dump (%d bytes) ---\n", bytesRead))
 		result.WriteString(toHexDump(data))
@@ -397,7 +386,7 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 	sb.WriteString(fmt.Sprintf("Sort by: %s | Max items: %d | Include hidden: %v\n\n", sortBy, maxItems, includeHidden))
 
 	if recursive {
-		var allEntries []dirEntryInfo
+		var allEntries []pkg.DirEntryInfo
 		err := filepath.WalkDir(filePath, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -414,12 +403,12 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 				}
 			}
 
-			allEntries = append(allEntries, dirEntryInfo{
-				name:    d.Name(),
-				path:    path,
-				isDir:   d.IsDir(),
-				info:    info2,
-				relPath: relPath,
+			allEntries = append(allEntries, pkg.DirEntryInfo{
+				Name:    d.Name(),
+				Path:    path,
+				IsDir:   d.IsDir(),
+				Info:    info2,
+				RelPath: relPath,
 			})
 			return nil
 		})
@@ -428,7 +417,7 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 			return mcp.NewToolResultError(fmt.Sprintf("walk failed: %v", err)), nil
 		}
 
-		sortEntries(allEntries, sortBy)
+		pkg.SortEntries(allEntries, sortBy)
 
 		fileCount := 0
 		dirCount := 0
@@ -438,11 +427,11 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 			if maxItems > 0 && fileCount+dirCount >= maxItems {
 				break
 			}
-			if e.isDir {
+			if e.IsDir {
 				dirCount++
-			} else if e.info != nil {
+			} else if e.Info != nil {
 				fileCount++
-				totalSize += e.info.Size()
+				totalSize += e.Info.Size()
 			}
 		}
 
@@ -455,14 +444,14 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 				break
 			}
 			typeStr := "F"
-			if e.isDir {
+			if e.IsDir {
 				typeStr = "D"
 			}
 			sizeStr := ""
-			if e.info != nil && !e.isDir {
-				sizeStr = fmt.Sprintf(" (%s)", humanReadableSize(e.info.Size()))
+			if e.Info != nil && !e.IsDir {
+				sizeStr = fmt.Sprintf(" (%s)", humanReadableSize(e.Info.Size()))
 			}
-			sb.WriteString(fmt.Sprintf("[%s] %s%s\n", typeStr, e.relPath, sizeStr))
+			sb.WriteString(fmt.Sprintf("[%s] %s%s\n", typeStr, e.RelPath, sizeStr))
 			count++
 		}
 
@@ -475,31 +464,31 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 			return mcp.NewToolResultError(fmt.Sprintf("failed to list directory: %v", err)), nil
 		}
 
-		var entryInfos []dirEntryInfo
+		var entryInfos []pkg.DirEntryInfo
 		for _, entry := range entries {
 			info2, _ := entry.Info()
 			name := entry.Name()
 			if !includeHidden && strings.HasPrefix(name, ".") && !entry.IsDir() {
 				continue
 			}
-			entryInfos = append(entryInfos, dirEntryInfo{
-				name:  name,
-				isDir: entry.IsDir(),
-				info:  info2,
+			entryInfos = append(entryInfos, pkg.DirEntryInfo{
+				Name:  name,
+				IsDir: entry.IsDir(),
+				Info:  info2,
 			})
 		}
 
-		sortEntries(entryInfos, sortBy)
+		pkg.SortEntries(entryInfos, sortBy)
 
 		fileCount := 0
 		dirCount := 0
 		var totalSize int64
 		for _, e := range entryInfos {
-			if e.isDir {
+			if e.IsDir {
 				dirCount++
-			} else if e.info != nil {
+			} else if e.Info != nil {
 				fileCount++
-				totalSize += e.info.Size()
+				totalSize += e.Info.Size()
 			}
 		}
 
@@ -512,14 +501,14 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 				break
 			}
 			typeStr := "F"
-			if e.isDir {
+			if e.IsDir {
 				typeStr = "D"
 			}
 			sizeStr := ""
-			if e.info != nil && !e.isDir {
-				sizeStr = fmt.Sprintf(" (%s)", humanReadableSize(e.info.Size()))
+			if e.Info != nil && !e.IsDir {
+				sizeStr = fmt.Sprintf(" (%s)", humanReadableSize(e.Info.Size()))
 			}
-			sb.WriteString(fmt.Sprintf("[%s] %s%s\n", typeStr, e.name, sizeStr))
+			sb.WriteString(fmt.Sprintf("[%s] %s%s\n", typeStr, e.Name, sizeStr))
 			count++
 		}
 
@@ -532,14 +521,14 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 }
 
 func getItemCompileAction(projectPath string, severity string, noCache bool) (*mcp.CallToolResult, error) {
-	if globalStore == nil || globalStore.compileCache == nil {
+	if pkg.GlobalStore == nil || pkg.GlobalStore.CompileCache == nil {
 		return mcp.NewToolResultText("=== Compile/Build Status Report ===\nProject path: " + projectPath + "\n\nCompile cache not initialized.\n"), nil
 	}
 
-	cacheKey := globalStore.compileCache.generateKey(projectPath, severity, nil)
+	cacheKey := pkg.GlobalStore.CompileCache.GenerateKey(projectPath, severity, nil)
 
 	if !noCache {
-		if cached, ok := globalStore.compileCache.get(cacheKey); ok {
+		if cached, ok := pkg.GlobalStore.CompileCache.Get(cacheKey); ok {
 			cachedResp := *cached
 			cachedResp.Cached = true
 			return mcp.NewToolResultText(formatCompileResult(&cachedResp, severity)), nil
@@ -555,9 +544,9 @@ func getItemCompileAction(projectPath string, severity string, noCache bool) (*m
 	dotnetFile := detectDotnetProject(projectPath)
 	goMod := detectGoProject(projectPath)
 
-	var langStatuses []LanguageStatus
+	var langStatuses []pkg.LanguageStatus
 
-	ns := LanguageStatus{Language: "node"}
+	ns := pkg.LanguageStatus{Language: "node"}
 	if nodePkg != "" {
 		ns.Detected = true
 		nodeCmd := exec.Command("node", "--version")
@@ -581,7 +570,7 @@ func getItemCompileAction(projectPath string, severity string, noCache bool) (*m
 	}
 	langStatuses = append(langStatuses, ns)
 
-	ps := LanguageStatus{Language: "python"}
+	ps := pkg.LanguageStatus{Language: "python"}
 	if len(pythonFiles) > 0 {
 		ps.Detected = true
 		pythonCmd := exec.Command("python3", "--version")
@@ -627,7 +616,7 @@ func getItemCompileAction(projectPath string, severity string, noCache bool) (*m
 	}
 	langStatuses = append(langStatuses, ps)
 
-	ds := LanguageStatus{Language: "dotnet"}
+	ds := pkg.LanguageStatus{Language: "dotnet"}
 	if dotnetFile != "" {
 		ds.Detected = true
 		dotnetCmd := exec.Command("dotnet", "--version")
@@ -650,7 +639,7 @@ func getItemCompileAction(projectPath string, severity string, noCache bool) (*m
 	}
 	langStatuses = append(langStatuses, ds)
 
-	gs := LanguageStatus{Language: "golang"}
+	gs := pkg.LanguageStatus{Language: "golang"}
 	if goMod != "" {
 		gs.Detected = true
 		goCmd := exec.Command("go", "--version")
@@ -675,19 +664,19 @@ func getItemCompileAction(projectPath string, severity string, noCache bool) (*m
 	}
 	langStatuses = append(langStatuses, gs)
 
-	result := &CompileResult{
+	result := &pkg.CompileResult{
 		Path:             projectPath,
 		Timestamp:        time.Now(),
 		Cached:           false,
 		LanguageStatuses: langStatuses,
 	}
 
-	globalStore.compileCache.set(cacheKey, result)
+	pkg.GlobalStore.CompileCache.Set(cacheKey, result)
 
 	return mcp.NewToolResultText(formatCompileResult(result, severity)), nil
 }
 
-func formatCompileResult(result *CompileResult, severity string) string {
+func formatCompileResult(result *pkg.CompileResult, severity string) string {
 	var sb strings.Builder
 	sb.WriteString("=== Compile/Build Status Report ===\n")
 	sb.WriteString(fmt.Sprintf("Project path: %s\n", result.Path))
@@ -733,7 +722,6 @@ func getItemDiffAction(filePath1, filePath2 string, hasFile2 bool, rootDir strin
 		return mcp.NewToolResultError("file2 is required for diff action"), nil
 	}
 
-	// Resolve and validate file2 path with boundary check
 	var resolvedFile2 string
 	if filepath.IsAbs(filePath2) {
 		resolvedFile2 = filepath.Clean(filePath2)
@@ -745,8 +733,7 @@ func getItemDiffAction(filePath1, filePath2 string, hasFile2 bool, rootDir strin
 	}
 	resolvedFile2 = filepath.Clean(resolvedFile2)
 
-	// Validate file2 is within sandbox
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		if err := validateInSandbox(pctx.Path, resolvedFile2); err != nil {
 			return mcp.NewToolResultText(fmt.Sprintf("file2 outside project sandbox: %s", filePath2)), nil
@@ -792,8 +779,8 @@ func getItemDiffAction(filePath1, filePath2 string, hasFile2 bool, rootDir strin
 	sb.WriteString(fmt.Sprintf("file1 MIME type: %s\n", mime1))
 	sb.WriteString(fmt.Sprintf("file2 MIME type: %s | Match: %v\n", mime2, mimeMatch))
 
-	md5_1, _ := computeMD5(filePath1)
-	md5_2, _ := computeMD5(filePath2)
+	md5_1, _ := pkg.ComputeMD5(filePath1)
+	md5_2, _ := pkg.ComputeMD5(filePath2)
 	sameHash := md5_1 == md5_2
 	sb.WriteString(fmt.Sprintf("file1 MD5: %s\n", md5_1))
 	sb.WriteString(fmt.Sprintf("file2 MD5: %s | Match: %v\n\n", md5_2, sameHash))

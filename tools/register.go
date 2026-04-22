@@ -1,17 +1,29 @@
-package main
+package tools
 
 import (
 	"context"
 	"fmt"
 	"path/filepath"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// Re-export functions for use in handlers.
+var (
+	openProject      = core.OpenProject
+	closeProject     = pkg.CloseProject
+	getGlobalProject = pkg.GetGlobalProject
+	isWithinProject  = pkg.IsWithinProject
+)
+
 // ==================== Tool Registration ====================
 
-func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string) {
+// RegisterTools registers all MCP tools with the given server.
+func RegisterTools(mcpServer *server.MCPServer, store *pkg.FileStore, rootDir string) {
 
 	// ==================== OpenProject ====================
 	openProjectTool := mcp.NewTool("OpenProject",
@@ -37,15 +49,19 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 		listProjects, _ := extractOptionalBool(req, "listProjects")
 
 		if listProjects {
-			return handleListProjects(rootDir)
+			result, err2 := core.HandleListProjects(rootDir)
+			if err2 != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to list projects: %v", err2)), nil
+			}
+			return result, nil
 		}
 
-		projectDir, err := OpenProject(rootDir, path)
+		projectDir, err := openProject(rootDir, path)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to open project: %v", err)), nil
 		}
 
-		pctx := GetGlobalProject()
+		pctx := getGlobalProject()
 		hint := ""
 		if pctx.NameHint != "" {
 			hint = fmt.Sprintf("\nProject name hint: %s", pctx.NameHint)
@@ -69,7 +85,7 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 	)
 
 	mcpServer.AddTool(closeProjectTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		CloseProject()
+		closeProject()
 		return mcp.NewToolResultText("Project closed. All tools will now require an OpenProject call before use."), nil
 	})
 
@@ -395,8 +411,10 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 
 // ==================== Helper: ValidateProjectActive ====================
 
+// validateProjectActive checks if a project is currently open.
 func validateProjectActive() error {
-	if GetGlobalProject() == nil || GetGlobalProject().Path == "" {
+	pctx := getGlobalProject()
+	if pctx == nil || pctx.Path == "" {
 		return fmt.Errorf("no project open. Call OpenProject first to set the active project context")
 	}
 	return nil
@@ -404,8 +422,9 @@ func validateProjectActive() error {
 
 // ==================== Helper: Resolve and Validate Path ====================
 
+// resolveAndValidatePath resolves a path relative to the current project.
 func resolveAndValidatePath(rootDir, path string) (string, error) {
-	pctx := GetGlobalProject()
+	pctx := getGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		// No project open, use rootDir directly
 		if !filepath.IsAbs(path) {
@@ -424,7 +443,7 @@ func resolveAndValidatePath(rootDir, path string) (string, error) {
 	resolved = filepath.Clean(resolved)
 
 	// Check boundary if within project scope
-	if !IsWithinProject(resolved) {
+	if !isWithinProject(resolved) {
 		return "", fmt.Errorf("path '%s' is outside the open project '%s'", path, pctx.Path)
 	}
 
@@ -440,8 +459,9 @@ func autoCommit(projectPath, operation, targetPath string) error {
 
 // ==================== Helper: Check Project Context for Path Resolution ====================
 
+// resolvePath resolves a path relative to the current project or root directory.
 func resolvePath(rootDir, path string) (string, error) {
-	pctx := GetGlobalProject()
+	pctx := getGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(pctx.Path, path)
@@ -456,18 +476,19 @@ func resolvePath(rootDir, path string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
+// resolvePathWithBoundaryCheck resolves a path and validates it's within the project.
 func resolvePathWithBoundaryCheck(rootDir, path string) (string, error) {
 	resolved, err := resolvePath(rootDir, path)
 	if err != nil {
 		return "", err
 	}
 
-	pctx := GetGlobalProject()
+	pctx := getGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return resolved, nil
 	}
 
-	if !IsWithinProject(resolved) {
+	if !isWithinProject(resolved) {
 		return "", fmt.Errorf("path '%s' is outside the open project '%s'", path, pctx.Path)
 	}
 

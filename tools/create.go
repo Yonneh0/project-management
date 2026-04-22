@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore, rootDir string) (*mcp.CallToolResult, error) {
 	pathStr, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("missing required argument 'path': %v", err)), nil
@@ -21,15 +23,13 @@ func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, 
 	overwrite, _ := extractOptionalBool(req, "overwrite")
 	content, _ := extractOptionalString(req, "content")
 
-	// Resolve path with boundary check
 	resolvedPath, err := resolvePathWithBoundaryCheck(rootDir, pathStr)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("path resolution failed: %v", err)), nil
 	}
 
-	// Check if archive path (archive.zip/subdir/file.txt or archive.tar.gz/entry)
 	baseResolved := filepath.Base(resolvedPath)
-	isArchiveBase := IsArchiveFile(baseResolved)
+	isArchiveBase := pkg.IsArchiveFile(baseResolved)
 	hasZipSlash := strings.Contains(pathStr, ".zip/")
 	hasTarSlash := strings.Contains(pathStr, ".tar/") || strings.Contains(pathStr, ".tar.gz/") || strings.Contains(pathStr, ".tgz/")
 	if isArchiveBase || hasZipSlash || hasTarSlash {
@@ -49,7 +49,7 @@ func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, 
 			return mcp.NewToolResultError(fmt.Sprintf("failed to create folder: %v", err)), nil
 		}
 
-		pctx := GetGlobalProject()
+		pctx := pkg.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			autoCommit(pctx.Path, "create", resolvedPath)
 		}
@@ -57,7 +57,6 @@ func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, 
 		return mcp.NewToolResultText(fmt.Sprintf("Folder created successfully: %s", resolvedPath)), nil
 	}
 
-	// Create file
 	parentDir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create parent directories: %v", err)), nil
@@ -75,14 +74,14 @@ func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, 
 	}
 
 	if content == "" && !isFolder {
-		content = "" // empty file
+		content = ""
 	}
 
 	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create file: %v", err)), nil
 	}
 
-	pctx := GetGlobalProject()
+	pctx := pkg.GetGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		autoCommit(pctx.Path, "create", resolvedPath)
 	}
@@ -99,36 +98,33 @@ func handleCreateInArchive(archivePath, content string, isFolder bool, overwrite
 	archFile := parts[0]
 	entryPath := parts[1]
 
-	// Sanitize entry path to prevent sandbox escapes in the archive
 	sanitizedName, sanitizeErr := sanitizeArchiveEntryPath(entryPath)
 	if sanitizeErr != nil {
 		return mcp.NewToolResultText(fmt.Sprintf("Entry path rejected (sandbox escape): %s - %v", entryPath, sanitizeErr)), nil
 	}
 	entryPath = sanitizedName
 
-	// Open or create archive
-	var archInfo *ArchiveInfo
+	var archInfo *pkg.ArchiveInfo
 	if existing, err := openArchive(archFile); err == nil {
 		archInfo = existing
 	} else {
-		format := GetArchiveFormat(archFile)
+		format := pkg.GetArchiveFormat(archFile)
 		if format == "" {
 			return mcp.NewToolResultError(fmt.Sprintf("unsupported archive format: %s", archFile)), nil
 		}
-		archInfo = &ArchiveInfo{
+		archInfo = &pkg.ArchiveInfo{
 			Path:    archFile,
-			Entries: make(map[string]ArchiveEntry),
+			Entries: make(map[string]pkg.ArchiveEntry),
 			Format:  format,
 			IsOpen:  true,
 		}
 	}
 
 	if isFolder {
-		// Ensure folder path ends with /
 		if !strings.HasSuffix(entryPath, "/") {
 			entryPath = entryPath + "/"
 		}
-		archInfo.Entries[entryPath] = ArchiveEntry{
+		archInfo.Entries[entryPath] = pkg.ArchiveEntry{
 			Name:    entryPath,
 			IsDir:   true,
 			ModTime: time.Now(),
@@ -139,7 +135,7 @@ func handleCreateInArchive(archivePath, content string, isFolder bool, overwrite
 				return mcp.NewToolResultError(fmt.Sprintf("entry already exists in archive (overwrite=false): %s", entryPath)), nil
 			}
 		}
-		archInfo.Entries[entryPath] = ArchiveEntry{
+		archInfo.Entries[entryPath] = pkg.ArchiveEntry{
 			Name:    entryPath,
 			Content: []byte(content),
 			IsDir:   false,
@@ -151,7 +147,7 @@ func handleCreateInArchive(archivePath, content string, isFolder bool, overwrite
 		return mcp.NewToolResultError(fmt.Sprintf("failed to update archive: %v", err)), nil
 	}
 
-	pctx := GetGlobalProject()
+	pctx := pkg.GetGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		autoCommit(pctx.Path, "create", archFile)
 	}

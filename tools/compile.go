@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"encoding/json"
@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-// ==================== Compile Status Helpers ====================
 
 func detectNodeProject(dir string) string {
 	var pkgPath string
@@ -60,7 +58,7 @@ func detectDotnetProject(dir string) string {
 			return nil
 		}
 		name := d.Name()
-		if (strings.HasSuffix(name, ".csproj") || strings.HasSuffix(name, ".vbproj") || strings.HasSuffix(name, ".sln")) && !d.IsDir() {
+		if (strings.HasSuffix(name, ".csproj") || strings.HasSuffix(name, ".vbProj") || strings.HasSuffix(name, ".sln")) && !d.IsDir() {
 			dotnetFile = path
 			return filepath.SkipAll
 		}
@@ -179,8 +177,8 @@ func checkPythonStatus(sb *strings.Builder, _ string, pyFiles []string) {
 				if pipErr = pipCmd.Run(); pipErr != nil {
 					sb.WriteString("Package manager (pip): NOT INSTALLED\n")
 				} else {
-					output, _ := pipCmd.Output()
-					sb.WriteString(fmt.Sprintf("Package manager (pip): INSTALLED (%s)\n", strings.TrimSpace(string(output))))
+					pipOutput, _ := pipCmd.Output()
+					sb.WriteString(fmt.Sprintf("Package manager (pip): INSTALLED (%s)\n", strings.TrimSpace(string(pipOutput))))
 				}
 			} else {
 				pipOutput, _ := pipCmd.Output()

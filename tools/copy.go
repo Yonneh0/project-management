@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,12 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// ==================== CopyItem Tool Handler ====================
-
-func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *fileStore, _ string) (*mcp.CallToolResult, error) {
+func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *pkg.FileStore, _ string) (*mcp.CallToolResult, error) {
 	sourcePath, err := extractArg[string](req, "source")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -29,12 +30,11 @@ func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 		overwrite = v
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return mcp.NewToolResultError("no project open. Call OpenProject first."), nil
 	}
 
-	// Resolve paths with boundary check
 	resolvedSource, err := resolvePathWithBoundaryCheck(pctx.Path, sourcePath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("source path resolution failed: %v", err)), nil
@@ -73,7 +73,7 @@ func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 		destInfoNew, _ := os.Stat(resolvedDest)
 		if destInfoNew != nil && destInfoNew.IsDir() {
 			modTime := destInfoNew.ModTime().UTC().Format(time.RFC3339)
-			store.upsertFile(resolvedDest, true, 0, modTime, "")
+			store.UpsertFile(resolvedDest, true, 0, modTime, "")
 		}
 
 		autoCommit(pctx.Path, "copy", resolvedSource)
@@ -114,12 +114,18 @@ func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 	destFile.Close()
 	elapsed := time.Since(startTime)
 
-	srcMD5, _ := computeMD5(resolvedSource)
-	destMD5, _ := computeMD5(resolvedDest)
+	srcMD5, err := pkg.ComputeMD5(resolvedSource)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to compute source MD5: %v", err)), nil
+	}
+	destMD5, err := pkg.ComputeMD5(resolvedDest)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to compute destination MD5: %v", err)), nil
+	}
 
 	if destInfoNew, _ := os.Stat(resolvedDest); destInfoNew != nil && !destInfoNew.IsDir() {
 		destModTime := destInfoNew.ModTime().UTC().Format(time.RFC3339)
-		store.upsertFile(resolvedDest, false, bytesCopied, destModTime, destMD5)
+		store.UpsertFile(resolvedDest, false, bytesCopied, destModTime, destMD5)
 
 		actionStr := "Copied"
 		if destExists {

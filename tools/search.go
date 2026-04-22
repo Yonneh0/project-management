@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,12 +8,15 @@ import (
 	"regexp"
 	"strings"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // ==================== Search Tool Handler ====================
 
-func handleSearch(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ string) (*mcp.CallToolResult, error) {
+func handleSearch(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore, _ string) (*mcp.CallToolResult, error) {
 	searchPath, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -69,7 +72,7 @@ func handleSearch(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ st
 		contextLines = c
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return mcp.NewToolResultError("no project open. Call OpenProject first."), nil
 	}

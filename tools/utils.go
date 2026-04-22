@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"archive/tar"
@@ -14,9 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-)
 
-// ==================== Utility Functions ====================
+	"project-management/pkg"
+)
 
 func detectMIMEType(path string) string {
 	f, err := os.Open(path)
@@ -109,23 +109,20 @@ func getUnixPermissions(info os.FileInfo) string {
 	return fmt.Sprintf("%04o", info.Mode().Perm())
 }
 
-// generateCommitMessage creates an auto-commit message for MCP operations.
 func generateCommitMessage(operation, path string) string {
 	baseName := filepath.Base(path)
 	return fmt.Sprintf("MCP: %s %s", strings.ToUpper(operation), baseName)
 }
 
-// commitChanges commits all changes in the project directory with a generated message.
 func commitChanges(projectPath, message string) error {
 	gitDir := filepath.Join(projectPath, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		return nil // no git repo, skip
+		return nil
 	}
 
 	addCmd := exec.Command("git", "add", ".")
 	addCmd.Dir = projectPath
 	if err := addCmd.Run(); err != nil {
-		// Try from parent if needed
 		addCmd = exec.Command("git", "add", "-A")
 		addCmd.Dir = filepath.Dir(projectPath)
 		if err := addCmd.Run(); err != nil {
@@ -136,7 +133,6 @@ func commitChanges(projectPath, message string) error {
 	commitCmd := exec.Command("git", "commit", "-m", message)
 	commitCmd.Dir = projectPath
 	if err := commitCmd.Run(); err != nil {
-		// Check if there's nothing to commit (common on first commit with no changes)
 		return nil
 	}
 
@@ -193,7 +189,6 @@ func runDiff(file1, file2 string, ignoreWhitespace, ignoreCase bool) string {
 	cmd := exec.Command("diff", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// diff returns exit code 1 when files differ, which is expected
 		exitCode := 1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
@@ -250,10 +245,6 @@ func minInt(a, b int) int {
 	return b
 }
 
-// ==================== Hex Dump Utilities ====================
-
-// toHexDump converts raw bytes to a formatted hex dump string with address,
-// hex byte values, and ASCII representation.
 func toHexDump(data []byte) string {
 	if len(data) == 0 {
 		return "(empty file)\n"
@@ -263,7 +254,6 @@ func toHexDump(data []byte) string {
 	sb.WriteString("Offset      00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  ASCII\n")
 
 	for i := 0; i < len(data); i += 16 {
-		// Offset
 		sb.WriteString(fmt.Sprintf("%08X    ", i))
 
 		end := i + 16
@@ -271,7 +261,6 @@ func toHexDump(data []byte) string {
 			end = len(data)
 		}
 
-		// Hex bytes
 		for j := 0; j < 16; j++ {
 			if i+j < len(data) {
 				sb.WriteString(fmt.Sprintf("%02X ", data[i+j]))
@@ -283,7 +272,6 @@ func toHexDump(data []byte) string {
 			}
 		}
 
-		// ASCII representation
 		sb.WriteString("  |")
 		for j := i; j < end; j++ {
 			b := data[j]
@@ -299,20 +287,13 @@ func toHexDump(data []byte) string {
 	return sb.String()
 }
 
-// fromHexDump parses a hex dump string (with or without formatting) back into raw bytes.
-// It accepts:
-//   - Raw hex strings like "4D5A9000..."
-//   - Formatted hex dumps with addresses, spaces, and ASCII columns
 func fromHexDump(hexString string) ([]byte, error) {
-	// First, try to parse as a raw hex string (no whitespace/formatting)
 	cleaned := strings.TrimSpace(hexString)
 
-	// Check if it looks like a formatted hex dump (contains "  |" or address patterns)
 	if strings.Contains(cleaned, "|") || strings.Contains(cleaned, "  ") {
 		return parseFormattedHexDump(cleaned)
 	}
 
-	// Try raw hex string parsing
 	cleaned = strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == ':' {
 			return -1
@@ -341,7 +322,6 @@ func fromHexDump(hexString string) ([]byte, error) {
 	return result, nil
 }
 
-// parseFormattedHexDump extracts byte values from a formatted hex dump output.
 func parseFormattedHexDump(hexString string) ([]byte, error) {
 	var result []byte
 	lines := strings.Split(hexString, "\n")
@@ -352,7 +332,6 @@ func parseFormattedHexDump(hexString string) ([]byte, error) {
 			continue
 		}
 
-		// Find the hex bytes section (after the offset, before the ASCII column)
 		asciiIdx := strings.Index(line, "|")
 		hexSection := line
 		if asciiIdx > 0 {
@@ -364,7 +343,6 @@ func parseFormattedHexDump(hexString string) ([]byte, error) {
 			}
 		}
 
-		// Extract hex bytes from the line
 		hexSection = strings.TrimSpace(hexSection)
 		parts := strings.Fields(hexSection)
 
@@ -382,8 +360,6 @@ func parseFormattedHexDump(hexString string) ([]byte, error) {
 
 	return result, nil
 }
-
-// ==================== Directory Copy Helper ====================
 
 func copyDirectoryRecursive(srcPath, destPath string) (int64, error) {
 	var totalBytes int64
@@ -442,22 +418,11 @@ func copyDirectoryRecursive(srcPath, destPath string) (int64, error) {
 	return totalBytes, nil
 }
 
-// ==================== Archive Sandbox Helpers ====================
-
-// sanitizeArchiveEntryPath cleans an archive entry path to prevent directory traversal.
-// It replaces backslashes with forward slashes, resolves . and .. segments,
-// and ensures the path doesn't escape the archive's parent directory.
 func sanitizeArchiveEntryPath(entryName string) (string, error) {
-	// Replace backslashes with forward slashes for cross-platform consistency
 	entryName = strings.ReplaceAll(entryName, "\\", "/")
-
-	// Clean the path (resolves . and .. segments)
 	cleaned := filepath.Clean(entryName)
-
-	// On Windows, filepath.Clean converts / to \, so normalize back to /
 	cleaned = strings.ReplaceAll(cleaned, "\\", "/")
 
-	// Ensure it doesn't start with ../ or ..\
 	if strings.HasPrefix(cleaned, "../") || cleaned == ".." {
 		return "", fmt.Errorf("entry path escapes archive: %s", entryName)
 	}
@@ -465,61 +430,45 @@ func sanitizeArchiveEntryPath(entryName string) (string, error) {
 	return cleaned, nil
 }
 
-// validateInSandbox checks that a path is within the project sandbox.
 func validateInSandbox(projectPath, checkPath string) error {
 	absProject := filepath.Clean(projectPath)
 	absCheck := filepath.Clean(checkPath)
 
 	if absCheck == absProject {
-		return nil // Exact match is valid
+		return nil
 	}
 
-	// Normalize both paths to forward slash for prefix checking
 	absProject = strings.ReplaceAll(absProject, "\\", "/")
 	absCheck = strings.ReplaceAll(absCheck, "\\", "/")
 
 	if strings.HasPrefix(absCheck, absProject+"/") {
-		return nil // Within sandbox (nested under project)
+		return nil
 	}
 
 	return fmt.Errorf("path '%s' escapes project sandbox '%s'", checkPath, projectPath)
 }
 
-// ==================== Archive Helpers ====================
-
-// resolveArchivePath parses a path like "archive.zip/subdir/file.txt" and returns
-// the archive file path and the internal entry path.
 func resolveArchivePath(path string) (string, string, bool) {
-	// Find the correct split point for archive paths.
-	// On Windows, simple SplitN(path, "/", 2) fails for paths like "C:/Projects/test.zip/test.txt"
-	// because it splits on the first "/" after the drive letter, giving ["C:", "Projects/..."].
-	// We need to find a separator (either / or \) that comes after an archive file extension.
-
 	archiveFile := ""
 	entryPath := ""
 
-	// Search for the rightmost separator that comes after an archive extension.
-	// We look for patterns like ".zip/", ".tar.gz/", ".gz/", ".rar/", ".7z/" etc.
-	// Also handle Windows backslash separators: ".zip\", ".tar.gz\", etc.
 	archiveExts := []string{".zip", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".gz", ".bz2", ".rar", ".7z", ".xz"}
 
 	bestSplitIdx := -1
 	for _, ext := range archiveExts {
-		// Check forward slash separator
 		searchStrFwd := ext + "/"
 		idxFwd := strings.Index(path, searchStrFwd)
 		if idxFwd > 0 {
-			splitPoint := idxFwd + len(searchStrFwd) - 1 // position of the "/"
+			splitPoint := idxFwd + len(searchStrFwd) - 1
 			if splitPoint > bestSplitIdx {
 				bestSplitIdx = splitPoint
 			}
 		}
 
-		// Check backslash separator (Windows paths)
 		searchStrBak := ext + "\\"
 		idxBak := strings.Index(path, searchStrBak)
 		if idxBak > 0 {
-			splitPoint := idxBak + len(searchStrBak) - 1 // position of the "\"
+			splitPoint := idxBak + len(searchStrBak) - 1
 			if splitPoint > bestSplitIdx {
 				bestSplitIdx = splitPoint
 			}
@@ -530,7 +479,6 @@ func resolveArchivePath(path string) (string, string, bool) {
 		archiveFile = path[:bestSplitIdx]
 		entryPath = path[bestSplitIdx+1:]
 	} else {
-		// Fallback: try simple split on first "/" or "\" (works for Unix-style paths without drive letters)
 		parts := strings.SplitN(path, "/", 2)
 		if len(parts) >= 2 {
 			archiveFile = parts[0]
@@ -545,39 +493,36 @@ func resolveArchivePath(path string) (string, string, bool) {
 		}
 	}
 
-	// Make archive file absolute if needed
 	if !filepath.IsAbs(archiveFile) {
-		if globalProject != nil && globalProject.Path != "" {
-			archiveFile = filepath.Join(globalProject.Path, archiveFile)
+		if pkg.GlobalProject != nil && pkg.GlobalProject.Path != "" {
+			archiveFile = filepath.Join(pkg.GlobalProject.Path, archiveFile)
 		}
 	}
 
 	archiveFile = filepath.Clean(archiveFile)
 
-	if IsArchiveFile(archiveFile) {
+	if pkg.IsArchiveFile(archiveFile) {
 		return archiveFile, entryPath, true
 	}
 	return "", "", false
 }
 
-// openArchive loads an archive into memory.
-func openArchive(archivePath string) (*ArchiveInfo, error) {
-	// Check cache first
-	archiveMu.RLock()
-	if cached, ok := archiveCache[archivePath]; ok && cached.IsOpen {
-		archiveMu.RUnlock()
+func openArchive(archivePath string) (*pkg.ArchiveInfo, error) {
+	pkg.ArchiveCacheMu.RLock()
+	if cached, ok := pkg.ArchiveCache[archivePath]; ok && cached.IsOpen {
+		pkg.ArchiveCacheMu.RUnlock()
 		return cached, nil
 	}
-	archiveMu.RUnlock()
+	pkg.ArchiveCacheMu.RUnlock()
 
-	format := GetArchiveFormat(archivePath)
+	format := pkg.GetArchiveFormat(archivePath)
 	if format == "" {
 		return nil, fmt.Errorf("unsupported archive format")
 	}
 
-	info := &ArchiveInfo{
+	info := &pkg.ArchiveInfo{
 		Path:    archivePath,
-		Entries: make(map[string]ArchiveEntry),
+		Entries: make(map[string]pkg.ArchiveEntry),
 		Format:  format,
 		IsOpen:  true,
 	}
@@ -602,15 +547,14 @@ func openArchive(archivePath string) (*ArchiveInfo, error) {
 		return nil, fmt.Errorf("unsupported archive format: %s", format)
 	}
 
-	archiveMu.Lock()
-	archiveCache[archivePath] = info
-	archiveMu.Unlock()
+	pkg.ArchiveCacheMu.Lock()
+	pkg.ArchiveCache[archivePath] = info
+	pkg.ArchiveCacheMu.Unlock()
 
 	return info, nil
 }
 
-// loadZipArchive loads entries from a zip file.
-func loadZipArchive(info *ArchiveInfo) error {
+func loadZipArchive(info *pkg.ArchiveInfo) error {
 	reader, err := zip.OpenReader(info.Path)
 	if err != nil {
 		return err
@@ -618,7 +562,7 @@ func loadZipArchive(info *ArchiveInfo) error {
 	defer reader.Close()
 
 	for _, f := range reader.File {
-		entry := ArchiveEntry{
+		entry := pkg.ArchiveEntry{
 			Name:    f.Name,
 			IsDir:   f.FileInfo().IsDir(),
 			ModTime: f.ModTime(),
@@ -639,8 +583,7 @@ func loadZipArchive(info *ArchiveInfo) error {
 	return nil
 }
 
-// loadTarArchive loads entries from a tar or tar.gz file.
-func loadTarArchive(info *ArchiveInfo, archivePath string, compressed bool) error {
+func loadTarArchive(info *pkg.ArchiveInfo, archivePath string, compressed bool) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -665,7 +608,7 @@ func loadTarArchive(info *ArchiveInfo, archivePath string, compressed bool) erro
 			continue
 		}
 
-		entry := ArchiveEntry{
+		entry := pkg.ArchiveEntry{
 			Name:    header.Name,
 			IsDir:   header.Typeflag == tar.TypeDir,
 			ModTime: header.ModTime,
@@ -681,8 +624,7 @@ func loadTarArchive(info *ArchiveInfo, archivePath string, compressed bool) erro
 	return nil
 }
 
-// saveArchive writes the archive info back to disk.
-func saveArchive(info *ArchiveInfo) error {
+func saveArchive(info *pkg.ArchiveInfo) error {
 	switch info.Format {
 	case "zip":
 		return saveZipArchive(info)
@@ -695,9 +637,7 @@ func saveArchive(info *ArchiveInfo) error {
 	}
 }
 
-// saveZipArchive writes entries to a zip file.
-func saveZipArchive(info *ArchiveInfo) error {
-	// Create temp file
+func saveZipArchive(info *pkg.ArchiveInfo) error {
 	tmpFile := info.Path + ".tmp"
 	f, err := os.Create(tmpFile)
 	if err != nil {
@@ -707,10 +647,9 @@ func saveZipArchive(info *ArchiveInfo) error {
 	writer := zip.NewWriter(f)
 
 	for name, entry := range info.Entries {
-		// Sanitize entry names when writing to prevent traversal in saved archives
 		sanitizedName, sanitizeErr := sanitizeArchiveEntryPath(name)
 		if sanitizeErr != nil {
-			continue // skip entries with invalid paths
+			continue
 		}
 
 		if entry.IsDir {
@@ -735,8 +674,7 @@ func saveZipArchive(info *ArchiveInfo) error {
 	return os.Rename(tmpFile, info.Path)
 }
 
-// saveTarArchive writes entries to a tar or tar.gz file.
-func saveTarArchive(info *ArchiveInfo, compressed bool) error {
+func saveTarArchive(info *pkg.ArchiveInfo, compressed bool) error {
 	tmpFile := info.Path + ".tmp"
 	f, err := os.Create(tmpFile)
 	if err != nil {
@@ -754,10 +692,9 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 	}
 
 	for name, entry := range info.Entries {
-		// Sanitize entry names when writing to prevent traversal in saved archives
 		sanitizedName, sanitizeErr := sanitizeArchiveEntryPath(name)
 		if sanitizeErr != nil {
-			continue // skip entries with invalid paths
+			continue
 		}
 
 		header := &tar.Header{
@@ -773,7 +710,7 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 			header.Mode = 0755
 			header.Name = sanitizedName + "/"
 		} else if len(entry.Content) == 0 && !entry.IsDir {
-			continue // skip empty non-dir entries
+			continue
 		}
 
 		if err := tarWriter.WriteHeader(header); err != nil {
@@ -785,14 +722,12 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 		}
 	}
 
-	// Close tar writer first to flush all data
 	if err := tarWriter.Close(); err != nil {
 		f.Close()
 		os.Remove(tmpFile)
 		return fmt.Errorf("failed to finalize tar: %w", err)
 	}
 
-	// Close gzip writer second to flush compression data
 	if compressed && gzWriter != nil {
 		if err := gzWriter.Close(); err != nil {
 			f.Close()
@@ -801,18 +736,15 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 		}
 	}
 
-	// Close the underlying file after tar/gzip writers are closed
 	if err := f.Close(); err != nil {
 		os.Remove(tmpFile)
 		return fmt.Errorf("failed to close archive file: %w", err)
 	}
 
-	// Now safe to rename on Windows (no file handles open)
 	return os.Rename(tmpFile, info.Path)
 }
 
-// listArchiveEntries returns a formatted listing of archive contents.
-func listArchiveEntries(info *ArchiveInfo) string {
+func listArchiveEntries(info *pkg.ArchiveInfo) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("=== Archive: %s ===\n", filepath.Base(info.Path)))
 	sb.WriteString(fmt.Sprintf("Format: %s | Entries: %d\n\n", info.Format, len(info.Entries)))
@@ -833,8 +765,7 @@ func listArchiveEntries(info *ArchiveInfo) string {
 	return sb.String()
 }
 
-// readArchiveFile reads content from an archive entry.
-func readArchiveFile(info *ArchiveInfo, entryPath string) ([]byte, bool) {
+func readArchiveFile(info *pkg.ArchiveInfo, entryPath string) ([]byte, bool) {
 	entry, ok := info.Entries[entryPath]
 	if !ok || entry.IsDir {
 		return nil, false
@@ -842,9 +773,8 @@ func readArchiveFile(info *ArchiveInfo, entryPath string) ([]byte, bool) {
 	return entry.Content, true
 }
 
-// writeArchiveFile writes/updates an entry in the archive.
-func writeArchiveFile(info *ArchiveInfo, entryPath string, content []byte) error {
-	info.Entries[entryPath] = ArchiveEntry{
+func writeArchiveFile(info *pkg.ArchiveInfo, entryPath string, content []byte) error {
+	info.Entries[entryPath] = pkg.ArchiveEntry{
 		Name:    entryPath,
 		Content: content,
 		IsDir:   false,
@@ -853,8 +783,7 @@ func writeArchiveFile(info *ArchiveInfo, entryPath string, content []byte) error
 	return saveArchive(info)
 }
 
-// deleteArchiveEntry removes an entry from the archive.
-func deleteArchiveEntry(info *ArchiveInfo, entryPath string) bool {
+func deleteArchiveEntry(info *pkg.ArchiveInfo, entryPath string) bool {
 	if _, ok := info.Entries[entryPath]; !ok {
 		return false
 	}
@@ -862,22 +791,20 @@ func deleteArchiveEntry(info *ArchiveInfo, entryPath string) bool {
 	return saveArchive(info) == nil
 }
 
-// compressToArchive compresses a file or directory into an archive.
 func compressToArchive(sourcePath string, archiveDest string, deleteOriginal bool) (string, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return "", fmt.Errorf("source not found: %s", sourcePath)
 	}
 
-	// Open or create the destination archive
-	var archInfo *ArchiveInfo
+	var archInfo *pkg.ArchiveInfo
 	if existing, err := openArchive(archiveDest); err == nil {
 		archInfo = existing
 	} else {
-		archInfo = &ArchiveInfo{
+		archInfo = &pkg.ArchiveInfo{
 			Path:    archiveDest,
-			Entries: make(map[string]ArchiveEntry),
-			Format:  GetArchiveFormat(archiveDest),
+			Entries: make(map[string]pkg.ArchiveEntry),
+			Format:  pkg.GetArchiveFormat(archiveDest),
 			IsOpen:  true,
 		}
 	}
@@ -887,7 +814,6 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 	}
 
 	if info.IsDir() {
-		// Add directory contents to archive
 		err = filepath.WalkDir(sourcePath, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -898,10 +824,9 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 				relPath = filepath.Base(path)
 			}
 
-			// Sanitize entry name to prevent sandbox escapes in archive
 			sanitizedName, sanitizeErr := sanitizeArchiveEntryPath(relPath)
 			if sanitizeErr != nil {
-				return nil // skip entries that escape (e.g., symlinks)
+				return nil
 			}
 
 			if d.IsDir() {
@@ -909,7 +834,7 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 				if infoErr != nil {
 					return nil
 				}
-				archInfo.Entries[sanitizedName+"/"] = ArchiveEntry{
+				archInfo.Entries[sanitizedName+"/"] = pkg.ArchiveEntry{
 					Name:    sanitizedName + "/",
 					IsDir:   true,
 					ModTime: info2.ModTime(),
@@ -917,13 +842,13 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 			} else {
 				content, readErr := os.ReadFile(path)
 				if readErr != nil {
-					return nil // skip unreadable files
+					return nil
 				}
 				info2, infoErr := d.Info()
 				if infoErr != nil {
 					return nil
 				}
-				archInfo.Entries[sanitizedName] = ArchiveEntry{
+				archInfo.Entries[sanitizedName] = pkg.ArchiveEntry{
 					Name:    sanitizedName,
 					Content: content,
 					IsDir:   false,
@@ -936,13 +861,12 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 			return "", fmt.Errorf("failed to add directory to archive: %w", err)
 		}
 	} else {
-		// Add single file to archive
 		content, err := os.ReadFile(sourcePath)
 		if err != nil {
 			return "", fmt.Errorf("failed to read source file: %w", err)
 		}
 		baseName := filepath.Base(sourcePath)
-		archInfo.Entries[baseName] = ArchiveEntry{
+		archInfo.Entries[baseName] = pkg.ArchiveEntry{
 			Name:    baseName,
 			Content: content,
 			IsDir:   false,
@@ -963,14 +887,12 @@ func compressToArchive(sourcePath string, archiveDest string, deleteOriginal boo
 	return resultMsg, nil
 }
 
-// extractFromArchive extracts an archive entry to the filesystem.
 func extractFromArchive(archivePath string, entryPath string, destPath string) (string, error) {
 	archInfo, err := openArchive(archivePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open archive: %w", err)
 	}
 
-	// Sanitize the entry path to prevent directory traversal
 	sanitizedEntry, err := sanitizeArchiveEntryPath(entryPath)
 	if err != nil {
 		return "", fmt.Errorf("entry path validation failed: %w", err)
@@ -981,8 +903,6 @@ func extractFromArchive(archivePath string, entryPath string, destPath string) (
 		return "", fmt.Errorf("entry not found in archive: %s", entryPath)
 	}
 
-	// Validate destination is within sandbox (destPath should be validated by caller via resolvePathWithBoundaryCheck)
-	// Ensure destination directory exists
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create destination directory: %w", err)
@@ -995,9 +915,6 @@ func extractFromArchive(archivePath string, entryPath string, destPath string) (
 	return fmt.Sprintf("Extracted '%s' from %s → %s", entryPath, filepath.Base(archivePath), destPath), nil
 }
 
-// ==================== Binary Search/Replace Helpers ====================
-
-// binaryFindBytes finds all occurrences of needle in haystack and returns their byte offsets.
 func binaryFindBytes(haystack, needle []byte) []int {
 	if len(needle) == 0 || len(needle) > len(haystack) {
 		return nil
@@ -1017,7 +934,6 @@ func binaryFindBytes(haystack, needle []byte) []int {
 	return positions
 }
 
-// binaryReplaceN replaces up to n occurrences of oldData with newData in content.
 func binaryReplaceN(content, oldData, newData []byte, n int) ([]byte, int) {
 	if len(oldData) == 0 {
 		return content, 0

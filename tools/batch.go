@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"fmt"
@@ -8,10 +8,10 @@ import (
 	"regexp"
 	"strings"
 
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
-
-// ==================== Batch Operation Results ====================
 
 type batchResult struct {
 	Batch      bool                     `json:"batch"`
@@ -57,10 +57,8 @@ func (br *batchResult) String() string {
 			action, _ := result["action"].(string)
 			path, _ := result["path"].(string)
 			sb.WriteString(fmt.Sprintf("  OK: %s - %s\n", action, filepath.Base(path)))
-			// Include data content for read/list operations in batch mode
 			data, hasData := result["data"].(string)
 			if hasData && data != "" {
-				// Truncate very large outputs to keep response manageable
 				maxDisplayLen := 4000
 				if len(data) > maxDisplayLen {
 					sb.WriteString(fmt.Sprintf("    Content (truncated, %d bytes total):\n", len(data)))
@@ -75,12 +73,10 @@ func (br *batchResult) String() string {
 	return sb.String()
 }
 
-// ==================== Batch Create Handler ====================
-
 func handleBatchCreate(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	items, ok := extractOptionalBatchItems(req, "items")
 	if !ok || len(items) == 0 {
-		return nil, false // Not a batch operation
+		return nil, false
 	}
 
 	br := newBatchResult(len(items))
@@ -104,7 +100,7 @@ func handleBatchCreate(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolRe
 				continue
 			}
 
-			pctx := GetGlobalProject()
+			pctx := pkg.GetGlobalProject()
 			if pctx != nil && pctx.Path != "" {
 				autoCommit(pctx.Path, "create", resolvedPath)
 			}
@@ -135,7 +131,7 @@ func handleBatchCreate(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolRe
 				continue
 			}
 
-			pctx := GetGlobalProject()
+			pctx := pkg.GetGlobalProject()
 			if pctx != nil && pctx.Path != "" {
 				autoCommit(pctx.Path, "create", resolvedPath)
 			}
@@ -151,12 +147,10 @@ func handleBatchCreate(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolRe
 	return mcp.NewToolResultText(br.String()), true
 }
 
-// ==================== Batch Edit Handler ====================
-
 func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	edits, ok := extractOptionalBatchEdits(req, "edits")
 	if !ok || len(edits) == 0 {
-		return nil, false // Not a batch operation
+		return nil, false
 	}
 
 	br := newBatchResult(len(edits))
@@ -183,105 +177,29 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 			oldText := edit.OldText
 			newText := edit.NewText
 			countArg := edit.Count
-			editFormat := edit.Format
-			if editFormat == "" {
-				editFormat = "text"
-			}
 
-			if editFormat == "hex" {
-				oldData, _ := fromHexDump(oldText)
-				newData, _ := fromHexDump(newText)
-				if len(oldData) > 0 {
-					positions := binaryFindBytes(contentBytes, oldData)
-					if len(positions) == 0 {
-						br.addError(i, "no occurrences found")
-						continue
-					}
-					repl := countArg
-					if repl == 0 || repl > len(positions) {
-						repl = len(positions)
-					}
-					newContent, replacedCount := binaryReplaceN(contentBytes, oldData, newData, repl)
-					os.WriteFile(resolvedPath, newContent, 0644)
-					pctx := GetGlobalProject()
-					if pctx != nil && pctx.Path != "" {
-						autoCommit(pctx.Path, "edit", resolvedPath)
-					}
-					br.addSuccess(map[string]interface{}{
-						"index":        i,
-						"path":         resolvedPath,
-						"action":       "Edited (hex)",
-						"replacements": replacedCount,
-					})
-				} else {
-					matchCount := strings.Count(string(contentBytes), oldText)
-					if matchCount == 0 {
-						br.addError(i, "no occurrences found")
-						continue
-					}
-					repl := countArg
-					if repl == 0 || repl > matchCount {
-						repl = matchCount
-					}
-					newContent := replaceN(string(contentBytes), oldText, newText, repl)
-					os.WriteFile(resolvedPath, []byte(newContent), 0644)
-					pctx := GetGlobalProject()
-					if pctx != nil && pctx.Path != "" {
-						autoCommit(pctx.Path, "edit", resolvedPath)
-					}
-					br.addSuccess(map[string]interface{}{
-						"index":        i,
-						"path":         resolvedPath,
-						"action":       "Edited (text)",
-						"replacements": repl,
-					})
-				}
-			} else {
-				matchCount := strings.Count(string(contentBytes), oldText)
-				if matchCount == 0 {
-					br.addError(i, "no occurrences found")
-					continue
-				}
-				repl := countArg
-				if repl == 0 || repl > matchCount {
-					repl = matchCount
-				}
-				newContent := replaceN(string(contentBytes), oldText, newText, repl)
-				os.WriteFile(resolvedPath, []byte(newContent), 0644)
-				pctx := GetGlobalProject()
-				if pctx != nil && pctx.Path != "" {
-					autoCommit(pctx.Path, "edit", resolvedPath)
-				}
-				br.addSuccess(map[string]interface{}{
-					"index":        i,
-					"path":         resolvedPath,
-					"action":       "Edited (text)",
-					"replacements": repl,
-				})
+			matchCount := strings.Count(string(contentBytes), oldText)
+			if matchCount == 0 {
+				br.addError(i, "no occurrences found")
+				continue
 			}
+			repl := countArg
+			if repl == 0 || repl > matchCount {
+				repl = matchCount
+			}
+			newContent := replaceN(string(contentBytes), oldText, newText, repl)
 
-		case "delete":
-			if err := os.Remove(resolvedPath); err != nil {
-				if edit.IgnoreMissing && os.IsNotExist(err) {
-					br.addSuccess(map[string]interface{}{
-						"index":  i,
-						"path":   resolvedPath,
-						"action": "Deleted (or already missing)",
-					})
-				} else {
-					br.addError(i, fmt.Sprintf("delete failed: %v", err))
-				}
-			} else {
-				pctx := GetGlobalProject()
-				if pctx != nil && pctx.Path != "" {
-					autoCommit(pctx.Path, "delete", resolvedPath)
-				}
-				br.addSuccess(map[string]interface{}{
-					"index":  i,
-					"path":   resolvedPath,
-					"action": "Deleted",
-				})
+			os.WriteFile(resolvedPath, []byte(newContent), 0644)
+			pctx := pkg.GetGlobalProject()
+			if pctx != nil && pctx.Path != "" {
+				autoCommit(pctx.Path, "edit", resolvedPath)
 			}
+			br.addSuccess(map[string]interface{}{
+				"index":        i,
+				"path":         resolvedPath,
+				"action":       "Edited",
+				"replacements": repl,
+			})
 
 		case "compress":
 			compressResultMsg, err := compressToArchive(resolvedPath, edit.CompressToArchive, edit.DeleteOriginalAfterCompress)
@@ -289,7 +207,7 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 				br.addError(i, fmt.Sprintf("compress failed: %v", err))
 				continue
 			}
-			pctx := GetGlobalProject()
+			pctx := pkg.GetGlobalProject()
 			if pctx != nil && pctx.Path != "" {
 				autoCommit(pctx.Path, "compress", resolvedPath)
 			}
@@ -315,7 +233,7 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 				br.addError(i, fmt.Sprintf("extract failed: %v", extractErr))
 				continue
 			}
-			pctx := GetGlobalProject()
+			pctx := pkg.GetGlobalProject()
 			if pctx != nil && pctx.Path != "" {
 				autoCommit(pctx.Path, "extract", resolvedPath)
 			}
@@ -326,6 +244,29 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 				"action":  "Extracted",
 			})
 
+		case "delete":
+			if err := os.Remove(resolvedPath); err != nil {
+				if edit.IgnoreMissing && os.IsNotExist(err) {
+					br.addSuccess(map[string]interface{}{
+						"index":  i,
+						"path":   resolvedPath,
+						"action": "Deleted (or already missing)",
+					})
+				} else {
+					br.addError(i, fmt.Sprintf("delete failed: %v", err))
+				}
+			} else {
+				pctx := pkg.GetGlobalProject()
+				if pctx != nil && pctx.Path != "" {
+					autoCommit(pctx.Path, "delete", resolvedPath)
+				}
+				br.addSuccess(map[string]interface{}{
+					"index":  i,
+					"path":   resolvedPath,
+					"action": "Deleted",
+				})
+			}
+
 		default:
 			br.addError(i, fmt.Sprintf("unknown edit action: %s", action))
 		}
@@ -334,12 +275,10 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 	return mcp.NewToolResultText(br.String()), true
 }
 
-// ==================== Batch Copy Handler ====================
-
 func handleBatchCopy(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	copies, ok := extractOptionalBatchCopies(req, "copies")
 	if !ok || len(copies) == 0 {
-		return nil, false // Not a batch operation
+		return nil, false
 	}
 
 	br := newBatchResult(len(copies))
@@ -398,7 +337,7 @@ func handleBatchCopy(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 			}
 		}
 
-		pctx := GetGlobalProject()
+		pctx := pkg.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			autoCommit(pctx.Path, "copy", srcResolved)
 		}
@@ -414,12 +353,10 @@ func handleBatchCopy(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 	return mcp.NewToolResultText(br.String()), true
 }
 
-// ==================== Batch Move Handler ====================
-
 func handleBatchMove(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	moves, ok := extractOptionalBatchMoves(req, "moves")
 	if !ok || len(moves) == 0 {
-		return nil, false // Not a batch operation
+		return nil, false
 	}
 
 	br := newBatchResult(len(moves))
@@ -480,7 +417,7 @@ func handleBatchMove(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 			}
 		}
 
-		pctx := GetGlobalProject()
+		pctx := pkg.GetGlobalProject()
 		if pctx != nil && pctx.Path != "" {
 			autoCommit(pctx.Path, "move", srcResolved)
 		}
@@ -496,12 +433,10 @@ func handleBatchMove(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 	return mcp.NewToolResultText(br.String()), true
 }
 
-// ==================== Batch Get Handler ====================
-
 func handleBatchGet(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	paths, ok := extractOptionalStringArray(req, "paths")
 	if !ok || len(paths) == 0 {
-		return nil, false // Not a batch operation
+		return nil, false
 	}
 
 	action, _ := extractOptionalString(req, "action")
@@ -578,12 +513,10 @@ func handleBatchGet(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResul
 	return mcp.NewToolResultText(br.String()), true
 }
 
-// ==================== Multi-Root Search Handler ====================
-
 func handleMultiSearch(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResult, bool) {
 	paths, ok := extractOptionalStringArray(req, "paths")
 	if !ok || len(paths) == 0 {
-		return nil, false // Not a multi-search operation
+		return nil, false
 	}
 
 	pattern, err := extractArg[string](req, "pattern")
@@ -621,17 +554,17 @@ func handleMultiSearch(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolRe
 	}
 
 	var allResults []map[string]interface{}
-	totalLimit := limit * len(paths) // Scale limit per root
+	totalLimit := limit * len(paths)
 
 	for _, searchRoot := range paths {
 		resolvedRoot, err := resolvePathWithBoundaryCheck(rootDir, searchRoot)
 		if err != nil {
-			continue // Skip invalid roots
+			continue
 		}
 
 		searchResults, err := doSearch(resolvedRoot, pattern, mode, totalLimit, includeHidden, fileOnly, dirOnly, extensions, contextLines)
 		if err != nil {
-			continue // Skip roots with errors
+			continue
 		}
 
 		for _, r := range searchResults {
@@ -648,8 +581,6 @@ func handleMultiSearch(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolRe
 
 	return mcp.NewToolResultText(formatMultiSearchResults(allResults)), true
 }
-
-// ==================== Search Helpers (used by multi-search) ====================
 
 func doSearch(searchPath, pattern string, mode string, limit int, includeHidden bool, fileOnly bool, dirOnly bool, extensions []string, contextLines int) ([]map[string]interface{}, error) {
 	var results []map[string]interface{}

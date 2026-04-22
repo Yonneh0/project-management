@@ -1,4 +1,4 @@
-package main
+package pkg
 
 import (
 	"fmt"
@@ -10,57 +10,56 @@ import (
 	"time"
 )
 
-// dirEntryInfo holds information about a directory entry.
-type dirEntryInfo struct {
-	name    string
-	path    string
-	isDir   bool
-	info    os.FileInfo
-	relPath string
+// DirEntryInfo holds information about a directory entry.
+type DirEntryInfo struct {
+	Name    string
+	Path    string
+	IsDir   bool
+	Info    os.FileInfo
+	RelPath string
 }
 
-func sortEntries(entries []dirEntryInfo, sortBy string) {
+// SortEntries sorts entries by the given criteria.
+func SortEntries(entries []DirEntryInfo, sortBy string) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		switch sortBy {
 		case "size":
 			sizeI := int64(0)
 			sizeJ := int64(0)
-			if entries[i].info != nil && !entries[i].isDir {
-				sizeI = entries[i].info.Size()
+			if entries[i].Info != nil && !entries[i].IsDir {
+				sizeI = entries[i].Info.Size()
 			}
-			if entries[j].info != nil && !entries[j].isDir {
-				sizeJ = entries[j].info.Size()
+			if entries[j].Info != nil && !entries[j].IsDir {
+				sizeJ = entries[j].Info.Size()
 			}
 			return sizeI < sizeJ
 		case "date":
 			timeI := time.Time{}
 			timeJ := time.Time{}
-			if entries[i].info != nil {
-				timeI = entries[i].info.ModTime()
+			if entries[i].Info != nil {
+				timeI = entries[i].Info.ModTime()
 			}
-			if entries[j].info != nil {
-				timeJ = entries[j].info.ModTime()
+			if entries[j].Info != nil {
+				timeJ = entries[j].Info.ModTime()
 			}
 			return timeI.Before(timeJ)
 		case "type":
-			if entries[i].isDir != entries[j].isDir {
-				return !entries[i].isDir
+			if entries[i].IsDir != entries[j].IsDir {
+				return !entries[i].IsDir
 			}
-			return entries[i].name < entries[j].name
-		default: // name
-			return entries[i].name < entries[j].name
+			return entries[i].Name < entries[j].Name
+		default:
+			return entries[i].Name < entries[j].Name
 		}
 	})
 }
-
-// ==================== Compile Cache Types ====================
 
 // LanguageStatus holds the build status for a language.
 type LanguageStatus struct {
 	Language    string   `json:"language"`
 	Detected    bool     `json:"detected"`
 	Runtime     string   `json:"runtime,omitempty"`
-	BuildStatus string   `json:"build_status,omitempty"` // "success", "failed", "skipped"
+	BuildStatus string   `json:"build_status,omitempty"`
 	Errors      []string `json:"errors,omitempty"`
 	Warnings    []string `json:"warnings,omitempty"`
 }
@@ -86,16 +85,16 @@ type cacheEntry struct {
 	key       string
 }
 
-// newCompileCache creates a new compile cache with the given TTL.
-func newCompileCache(ttl time.Duration) *compileCache {
+// NewCompileCache creates a new compile cache with the given TTL.
+func NewCompileCache(ttl time.Duration) *compileCache {
 	return &compileCache{
 		entries: make(map[string]*cacheEntry),
 		ttl:     ttl,
 	}
 }
 
-// generateKey creates a cache key from the compile parameters.
-func (c *compileCache) generateKey(path string, severity string, languages []string) string {
+// GenerateKey creates a cache key from the compile parameters.
+func (c *compileCache) GenerateKey(path string, severity string, languages []string) string {
 	key := path + ":" + severity
 	if len(languages) > 0 {
 		sort.Strings(languages)
@@ -106,8 +105,8 @@ func (c *compileCache) generateKey(path string, severity string, languages []str
 	return key
 }
 
-// get retrieves a cached result if it exists and hasn't expired.
-func (c *compileCache) get(key string) (*CompileResult, bool) {
+// Get retrieves a cached result if it exists and hasn't expired.
+func (c *compileCache) Get(key string) (*CompileResult, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -116,7 +115,6 @@ func (c *compileCache) get(key string) (*CompileResult, bool) {
 		return nil, false
 	}
 
-	// Check TTL expiration
 	if time.Since(entry.createdAt) > c.ttl {
 		delete(c.entries, key)
 		return nil, false
@@ -125,8 +123,8 @@ func (c *compileCache) get(key string) (*CompileResult, bool) {
 	return entry.result, true
 }
 
-// set stores a result in the cache.
-func (c *compileCache) set(key string, result *CompileResult) {
+// Set stores a result in the cache.
+func (c *compileCache) Set(key string, result *CompileResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -137,8 +135,8 @@ func (c *compileCache) set(key string, result *CompileResult) {
 	}
 }
 
-// invalidate removes all cache entries matching a path prefix.
-func (c *compileCache) invalidate(path string) {
+// Invalidate removes all cache entries matching a path prefix.
+func (c *compileCache) Invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -155,14 +153,12 @@ func (c *compileCache) invalidate(path string) {
 	}
 }
 
-// invalidateAll removes all cache entries.
-func (c *compileCache) invalidateAll() {
+// InvalidateAll removes all cache entries.
+func (c *compileCache) InvalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*cacheEntry)
 }
-
-// ==================== Project Context Types ====================
 
 // ProjectContext holds the currently active project state.
 type ProjectContext struct {
@@ -172,10 +168,18 @@ type ProjectContext struct {
 	IsNew    bool   // whether this was just created (not previously existing)
 }
 
-// globalProject is the singleton project context.
-var globalProject *ProjectContext = nil
+// GlobalProject is the singleton project context.
+var GlobalProject *ProjectContext = nil
 
-// ==================== Archive Types ====================
+// CloseProject resets the global project context.
+func CloseProject() {
+	GlobalProject = nil
+}
+
+// GetGlobalProject returns the current project context.
+func GetGlobalProject() *ProjectContext {
+	return GlobalProject
+}
 
 // ArchiveEntry represents a single entry within an archive.
 type ArchiveEntry struct {
@@ -193,25 +197,22 @@ type ArchiveInfo struct {
 	IsOpen  bool   // whether the archive is currently loaded in memory
 }
 
-// archiveCache stores open archives by their path.
-var archiveCache = make(map[string]*ArchiveInfo)
-var archiveMu sync.RWMutex
+// ArchiveCache stores open archives by their path.
+var ArchiveCache = make(map[string]*ArchiveInfo)
 
-// ==================== Project Boundary Check ====================
+// ArchiveCacheMu protects ArchiveCache.
+var ArchiveCacheMu sync.RWMutex
 
 // IsWithinProject checks if a resolved absolute path is within the current project root.
 func IsWithinProject(path string) bool {
-	if globalProject == nil || globalProject.Path == "" {
-		return true // no project open, allow all paths
+	if GlobalProject == nil || GlobalProject.Path == "" {
+		return true
 	}
 
-	// Clean both paths to normalize (removes trailing separators, resolves . and ..)
 	cleanPath := filepath.Clean(path)
-	cleanProject := filepath.Clean(globalProject.Path)
+	cleanProject := filepath.Clean(GlobalProject.Path)
 
-	// If already absolute, compare directly after cleaning
 	if filepath.IsAbs(cleanPath) && filepath.IsAbs(cleanProject) {
-		// Case-insensitive drive letter comparison for Windows (C: vs c:)
 		comparePath := cleanPath
 		compareProj := cleanProject
 		if len(comparePath) >= 2 && comparePath[1] == ':' {
@@ -221,13 +222,10 @@ func IsWithinProject(path string) bool {
 			compareProj = strings.ToLower(compareProj)
 		}
 
-		// Direct equality - path equals project root exactly
 		if comparePath == compareProj {
 			return true
 		}
 
-		// Check if path is a subdirectory of the project
-		// Must have: path starts with project + separator (not just prefix)
 		if len(comparePath) > len(compareProj) && comparePath[len(compareProj)] == filepath.Separator {
 			return strings.HasPrefix(comparePath, compareProj+string(filepath.Separator))
 		}
@@ -235,7 +233,6 @@ func IsWithinProject(path string) bool {
 		return false
 	}
 
-	// For relative paths, make them absolute first
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return false
@@ -248,7 +245,6 @@ func IsWithinProject(path string) bool {
 	absPath = filepath.Clean(absPath)
 	absProject = filepath.Clean(absProject)
 
-	// Case-insensitive drive letter comparison for Windows (C: vs c:)
 	compareAbs := strings.ToLower(absPath)
 	compareProjAbs := strings.ToLower(absProject)
 
@@ -265,11 +261,11 @@ func IsWithinProject(path string) bool {
 
 // ResolveProjectPath resolves a path relative to the current project.
 func ResolveProjectPath(path string) (string, error) {
-	if globalProject == nil || globalProject.Path == "" {
+	if GlobalProject == nil || GlobalProject.Path == "" {
 		return "", fmt.Errorf("no project open")
 	}
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(globalProject.Path, path)
+		path = filepath.Join(GlobalProject.Path, path)
 	}
 	return filepath.Clean(path), nil
 }
@@ -281,8 +277,6 @@ func ResolveRootPath(rootDir, path string) (string, error) {
 	}
 	return filepath.Clean(path), nil
 }
-
-// ==================== Archive Helpers ====================
 
 // IsArchiveFile checks if a file is an archive based on extension.
 func IsArchiveFile(path string) bool {
@@ -310,7 +304,6 @@ func GetArchiveFormat(path string) string {
 	case ".7z":
 		return "7z"
 	default:
-		// Fallback: try magic byte detection for files without recognized extensions
 		return detectArchiveFormatByMagicBytes(path)
 	}
 }
@@ -323,24 +316,21 @@ func detectArchiveFormatByMagicBytes(path string) string {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 260) // Read enough bytes for any magic signature
+	buf := make([]byte, 260)
 	n, err := f.Read(buf)
 	if err != nil || n < 4 {
 		return ""
 	}
 	buf = buf[:n]
 
-	// ZIP: PK\x03\x04 (0x50 0x4B 0x03 0x04)
 	if buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04 {
 		return "zip"
 	}
 
-	// GZIP: \x1f\x8b (0x1F 0x8B) - treat as tar.gz since we don't support raw gzip extraction
 	if buf[0] == 0x1F && buf[1] == 0x8B {
 		return "tar.gz"
 	}
 
-	// TAR: offset 257-262 should contain "ustar" for POSIX tar
 	if n >= 263 && string(buf[257:262]) == "ustar" {
 		return "tar"
 	}

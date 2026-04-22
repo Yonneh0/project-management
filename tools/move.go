@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,12 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"project-management/core"
+	"project-management/pkg"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// ==================== MoveItem Tool Handler ====================
-
-func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *fileStore, _ string) (*mcp.CallToolResult, error) {
+func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *pkg.FileStore, _ string) (*mcp.CallToolResult, error) {
 	sourcePath, err := extractArg[string](req, "source")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -29,12 +30,11 @@ func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 		overwrite = v
 	}
 
-	pctx := GetGlobalProject()
+	pctx := core.GetGlobalProject()
 	if pctx == nil || pctx.Path == "" {
 		return mcp.NewToolResultError("no project open. Call OpenProject first."), nil
 	}
 
-	// Resolve paths with boundary check
 	resolvedSource, err := resolvePathWithBoundaryCheck(pctx.Path, sourcePath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("source path resolution failed: %v", err)), nil
@@ -55,7 +55,7 @@ func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 
 	srcSize := srcInfo.Size()
 	srcModTime := srcInfo.ModTime().UTC().Format(time.RFC3339)
-	srcMD5, _ := computeMD5(resolvedSource)
+	srcMD5, _ := pkg.ComputeMD5(resolvedSource)
 
 	if _, err = os.Stat(resolvedDest); err == nil {
 		if !overwrite {
@@ -78,11 +78,11 @@ func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 			}
 			os.RemoveAll(resolvedSource)
 
-			store.deleteFile(resolvedSource)
+			store.DeleteFile(resolvedSource)
 			destInfo3, _ := os.Stat(resolvedDest)
 			if destInfo3 != nil && destInfo3.IsDir() {
 				newModTime := destInfo3.ModTime().UTC().Format(time.RFC3339)
-				store.upsertFile(resolvedDest, true, 0, newModTime, "")
+				store.UpsertFile(resolvedDest, true, 0, newModTime, "")
 			}
 
 			autoCommit(pctx.Path, "move", resolvedSource)
@@ -109,12 +109,12 @@ func handleMoveItem(_ context.Context, req mcp.CallToolRequest, store *fileStore
 		os.Remove(resolvedSource)
 	}
 
-	store.deleteFile(resolvedSource)
+	store.DeleteFile(resolvedSource)
 	destInfo3, _ := os.Stat(resolvedDest)
 	if destInfo3 != nil && !destInfo3.IsDir() {
-		newMD5, _ := computeMD5(resolvedDest)
+		newMD5, _ := pkg.ComputeMD5(resolvedDest)
 		newModTime := destInfo3.ModTime().UTC().Format(time.RFC3339)
-		store.upsertFile(resolvedDest, false, destInfo3.Size(), newModTime, newMD5)
+		store.UpsertFile(resolvedDest, false, destInfo3.Size(), newModTime, newMD5)
 	}
 
 	autoCommit(pctx.Path, "move", resolvedSource)

@@ -20,7 +20,7 @@ A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serv
 
 - [Go 1.21+](https://go.dev/dl/) installed on your system
 - A C compiler (required by the `modernc.org/sqlite` pure-Go SQLite library)
-  - **Windows**: Download [MinGW-w64](https://www.mingw-w64.org/) or use [TDM-GCC](https://tdm-gcc.tdmlab.com/)
+  - **Windows**: Download [MinGW-w64](https://www.mingw-w64.org/) or use [TDM-GCC](https://tdm-gcc.tdmlab.com/) _(not needed with `CGO_ENABLED=0` build)_
   - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
   - **Linux**: `build-essential` package (`sudo apt install build-essential`)
 
@@ -30,16 +30,21 @@ A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serv
 
 ```bash
 # Navigate to the project directory
-cd mcp-project-file-management
+cd project-management
 
 # Download dependencies
 go mod download
 
-# Build the binary
-go build -o .
+# Build with optimizations (PowerShell)
+$env:CGO_ENABLED="0"; go build -ldflags="-s -w" -o project-management.exe
+
+# Build with optimizations (cmd)
+set CGO_ENABLED=0 && go build -ldflags="-s -w" -o project-management.exe
 ```
 
-The compiled binary `mcp-project-file-management` (or `mcp-project-file-management.exe` on Windows) will be created in the current directory.
+The `-ldflags="-s -w"` flags strip symbol tables and debug information, producing a smaller binary. `CGO_ENABLED=0` enables static linking so no external C compiler is needed (the `modernc.org/sqlite` library is pure Go).
+
+The compiled binary `project-management.exe` will be created in the current directory.
 
 ### Run Directly (Development)
 
@@ -58,7 +63,7 @@ go run . "E:\sandbox\AI_SLOP\"
 The server runs in **stdio mode** by default, communicating via standard input/output — the standard transport for MCP servers.
 
 ```bash
-./mcp-project-file-management [target_directory]
+.\project-management.exe [target_directory]
 ```
 
 | Argument | Description | Default |
@@ -77,7 +82,7 @@ LM Studio supports MCP servers, allowing AI models to call your tools directly. 
 ### Step 1: Build or Place the Binary
 
 Ensure the compiled binary is accessible at a known path, e.g.:
-- `C:\Projects\AI\mcp-project-file-management\mcp-project-file-management.exe`
+- `C:\Projects\AI\project-management\project-management.exe`
 - Or wherever you built/placed it
 
 ### Step 2: Configure MCP Servers in LM Studio
@@ -88,8 +93,8 @@ Ensure the compiled binary is accessible at a known path, e.g.:
 
 | Field | Value |
 |-------|-------|
-| **Server Name** | `mcp-project-file-management` |
-| **Command** | Full path to the binary (e.g., `C:\Projects\AI\mcp-project-file-management\mcp-project-file-management.exe`) |
+| **Server Name** | `project-management` |
+| **Command** | Full path to the binary (e.g., `C:\Projects\AI\project-management\project-management.exe`) |
 | **Arguments** | *(optional)* Target directory, e.g., `C:\Projects\AI` |
 
 Or via the LM Studio MCP settings JSON file (`settings.json` or `mcp-config.json`):
@@ -97,8 +102,8 @@ Or via the LM Studio MCP settings JSON file (`settings.json` or `mcp-config.json
 ```json
 {
   "mcpServers": {
-    "mcp-project-file-management": {
-      "command": "C:\\Projects\\AI\\mcp-project-file-management\\mcp-project-file-management.exe",
+    "project-management": {
+      "command": "C:\\Projects\\AI\\project-management\\project-management.exe",
       "args": ["C:\\Projects\\AI"]
     }
   }
@@ -121,7 +126,7 @@ Open an existing project or create a new one. Sets the active project context fo
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | No | "" | Project path (absolute or relative to rootDir). Empty = auto-generate YYYYMMDD name. |
+| `path` | string | No | "" | Project path (absolute or relative to target_directory). Empty = auto-generate YYYYMMDD name. |
 | `listProjects` | boolean | No | false | If true, list available projects instead of opening one. Returns array of project metadata. Does NOT require an open project context. |
 
 **Behavior:**
@@ -173,7 +178,7 @@ Read file content, list directory contents, get metadata, check compile status, 
 | `line` | number | No | — | 1-based single line number to read (overrides offset/length) |
 | `startLine` | number | No | — | 1-based start of line range (inclusive) |
 | `endLine` | number | No | — | 1-based end of line range (inclusive) |
-| `encoding` | string | No | "utf-8" | Character encoding hint |
+| `format` | string | No | "auto" | Output format for read action: auto (text/binary detection), text (force text), hex (hex dump) |
 | `recursive` | boolean | No | false | For directories: list recursively |
 | `maxItems` | number | No | 100 | Maximum directory entries to return (0 = unlimited) |
 | `includeHidden` | boolean | No | false | Include hidden/dot files in results |
@@ -187,10 +192,10 @@ Read file content, list directory contents, get metadata, check compile status, 
 
 **Action modes:**
 
-- **`auto`** (default): Automatically detects whether path is a file (`read`) or directory (`list`). For archives, uses `archive-list`.
+- **`auto`** (default): Automatically detects whether path is a file (`read`) or directory (`list`). For directories, returns `list`. For archives, uses `archive-list`.
 - **`read`**: Read file content with offset/length support, line-range selection, binary detection. Supports reading from archive entries.
 - **`list`**: List directory contents with sorting, filtering, recursive walking. Also lists archive contents.
-- **`info`**: Get detailed metadata (permissions, MIME type, MD5 hash, timestamps). Archive info shows format and entry count.
+- **`info`**: Get detailed metadata (permissions, MIME type, MD5 hash, timestamps). For archives, shows format and entry count instead of file metadata.
 - **`compile`**: Check build status for Node.js, Python, .NET, and Go projects (with 60s cache)
 - **`diff`**: Compare two files with unified diff output and metadata comparison
 - **`archive-list`**: List all entries in a ZIP/TAR/TAR.GZ archive
@@ -223,7 +228,7 @@ Edit, delete, compress, or extract files. Supports multiple operations via the `
 
 **Action modes:**
 
-- **`edit`** (default): Find and replace text in a file. Reports occurrences found vs replacements made with size delta.
+- **`edit`** (default): Find and replace text in a file. Reports occurrences found vs replacements made with size delta. Only works on regular files, not directories or archives.
 - **`delete`**: Delete a file or directory. Directories require `recursive=true` if not empty. Returns error for missing items unless `ignoreMissing=true`.
 - **`compress`**: Compress file(s)/folder into an archive (.zip, .tar.gz). Supports adding to existing archives. Optional `deleteOriginalAfterCompress`.
 - **`extract`**: Extract from archive and write to filesystem. Use `path` as destination or `archive.zip/entry/path` format.
@@ -309,30 +314,56 @@ The `Search` tool supports searching across multiple root directories simultaneo
 
 ### Git Tool
 
-Execute git commands within a project directory. Supports all major git operations:
+Execute git commands within a project directory. Supports all major git operations with structured output parsing.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `action` | string | Yes | — | Git action: status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert |
-| `path` | string | No | (open project) | Project directory (defaults to open project path) |
+| `path` | string | No | (open project) | Project directory (defaults to the currently open project path) |
 | `args` | array | No | — | Additional raw git arguments passed directly |
+
+**Common parameters (vary by action):**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `maxCount` | number | No | 20 | For log: maximum commits to return |
+| `format` | string | No | "short" | For log: output format — json, short, fuller, oneline |
+| `staged` | boolean | No | false | For diff: show staged changes instead of unstaged |
+| `path` (diff) | string | No | — | For diff: limit diff to specific file path |
+| `files` | array | Yes (add) | — | For add: array of file paths to stage |
+| `message` | string | Yes (commit/stash/save/tag) | — | Commit/stash/tag message |
+| `amend` | boolean | No | false | For commit: modify last commit instead of creating new one |
+| `remote` | string | No | "origin" | For push/pull: remote name |
+| `force` | boolean | No | false | For push: force push to remote |
+| `branch action` | string | No | "list" | For branch: list (default), create, delete, switch |
+| `name` | string | Varies | — | Branch/tag name for create/delete/switch operations |
+| `stash action` | string | No | "save" | For stash: save (default), pop, list, apply |
+| `reset mode` | string | No | "mixed" | For reset: soft, mixed (default), hard |
+| `commit` | string | Varies | — | Target commit hash for reset/revert operations |
+| `dryRun` | boolean | No | false | For clean: show what would be deleted without deleting |
+| `directories` | boolean | No | false | For clean: also remove untracked directories |
+| `target` | string | Yes (checkout) | — | Branch name for checkout/switch, or file path for restore |
+| `create` | boolean | No | false | For checkout: create new branch instead of switching existing |
+| `noCommit` | boolean | No | false | For revert: perform the revert but don't commit |
 
 **Actions:**
 
-- **status**: Working tree status — branch info, staged/unstaged changes, untracked files
-- **log**: Commit history — use `maxCount=N`, `format=json\|short\|fuller\|oneline`
-- **diff**: Unstaged or staged changes — use `staged=true` for staged changes
-- **add**: Stage files — provide `files` array with paths to stage
-- **commit**: Create a commit — required: `message`, optional: `amend=true`
-- **push/pull**: Push/pull from remote — remote defaults to 'origin'
-- **branch**: List/create/switch branches — actions: list (default), create, delete, switch
-- **stash**: Stash/unstash changes — actions: save (default), pop, list, apply
-- **reset**: Reset working tree — modes: soft, mixed (default), hard
-- **clean**: Remove untracked files — `dryRun=true` shows what would be deleted
-- **tag**: List/create tags — actions: list (default), create, delete
-- **remote**: Manage remotes — actions: list (default), add, remove, set-url
-- **checkout**: Switch branches or restore files — required: `target` parameter
-- **revert**: Revert a commit — required: `commit` parameter
+- **status**: Working tree status — returns structured data with index/worktree status codes, branch info, untracked file count. Output format: `[INDEX][WORKTREE] path`
+- **log**: Commit history — `format=json` returns parseable JSON array with sha, authorName, authorEmail, date, subject fields. `format=oneline` returns compact one-line-per-commit format.
+- **diff**: Unstaged or staged changes — unified diff with 3 lines of context (`-U3`). Use `staged=true` to show index vs HEAD. Use `path="file.go"` to limit to specific file.
+- **add**: Stage files for commit — provides `files` array parameter with paths to stage.
+- **commit**: Create a commit — required: `message`. Optional: `amend=true` to modify last commit. Auto-configures user.name/user.email if not set (defaults to "MCP Tool"). Automatically runs `git add -A` before non-amend commits.
+- **push/pull**: Push/pull from remote — `remote` parameter defaults to 'origin'. `force=true` for force push.
+- **branch**: List/create/switch branches — `action=list` (default, shows all branches with current marker), `action=create`, `action=delete`, `action=switch`. Required: `name` for create/delete/switch.
+- **stash**: Stash/unstash changes — `action=save` (default, uses `git stash push`), `action=pop`, `action=list`, `action=apply`. Optional: `message` parameter for save action.
+- **reset**: Reset working tree — `mode=soft\|mixed` (default)\|hard. Optional: `commit` parameter to specify target commit hash.
+- **clean**: Remove untracked files — `dryRun=true` shows what would be deleted without deleting. `directories=true` also removes untracked directories (`-d`). Default is `-f` (force remove files only).
+- **tag**: List/create tags — `action=list` (default, lists all tags with `-l -n`). `action=create`: requires `name`, optional `message` for annotated tag. `action=delete`: requires `name`.
+- **remote**: Manage remotes — `action=list` (default, shows remote name and URL). `action=add`: requires `name` and `url`. `action=remove`: requires `name`. `action=set-url`: requires `name` and `url`.
+- **checkout**: Switch branches or restore files — required: `target` parameter (branch name). Optional: `create=true` to create new branch (`git checkout -b`).
+- **revert**: Revert a commit — required: `commit` parameter (commit hash). Optional: `noCommit=true` to perform revert changes without auto-committing.
+
+**Response format:** Actions that return lists (status, log with json format, branch, stash, tag, remote) return structured parsed data. Other actions return raw git output or success/failure messages. Exit code 0 indicates success; non-zero exit codes with stderr indicate errors.
 
 ---
 
@@ -351,34 +382,36 @@ Check compile/build status for projects using various runtimes (Node.js, Python,
 ## Project Structure
 
 ```
-mcp-project-file-management/
-├── main.go                    # Server entry point, stdio transport setup, database initialization
-├── shared_types.go            # Shared types (dirEntryInfo, sortEntries, CompileResult, compileCache, ArchiveInfo, ProjectContext)
-├── db.go                      # SQLite database operations (index, search, duplicates, MD5 hashing, directory stats)
-├── watcher.go                 # File system watcher for auto-indexing (ignores .mcp_file_index.db)
-├── newproject.go              # OpenProject/CloseProject project lifecycle with git initialization
-├── mcp_tools.go               # MCP tool registration and path resolution helpers
-├── mcp_args.go                # Argument extraction helpers (extractArg, extractOptional*, array helpers)
-├── mcp_create.go              # CreateItem tool handler (files, directories, archive entries)
-├── mcp_get.go                 # GetItem tool handler (read, list, info, compile, diff actions)
-├── mcp_edit.go                # EditItem tool handler (edit, delete, compress, extract actions)
-├── mcp_copy.go                # CopyItem tool handler (files and recursive directory copy)
-├── mcp_move.go                # MoveItem tool handler (rename/move with cross-filesystem fallback)
-├── mcp_search.go              # Search tool handler (name, regex, grep modes)
-├── mcp_compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection)
-├── mcp_utils.go               # Utility functions (MIME detection, archive I/O, sandbox validation, git commit)
-├── mcp_batch.go               # Batch operation handlers (batch create/edit/copy/move/get/search)
-├── mcp_git.go                 # Git tool handler (status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert)
-├── sandbox_test.go            # Unit tests for sandbox security (sanitizeArchiveEntryPath, validateInSandbox)
+project-management/
+├── main.go                    # Server entry point, stdio transport setup
 ├── go.mod                     # Go module definition
 ├── go.sum                     # Dependency checksums
-└── README.md                  # This file
+├── README.md                  # This file
+├── core/
+│   └── newproject.go          # OpenProject/CloseProject project lifecycle with git initialization
+├── pkg/
+│   ├── shared_types.go        # Shared types (dirEntryInfo, CompileResult, compileCache, ArchiveInfo)
+│   ├── db.go                  # SQLite database operations (index, search, duplicates, MD5 hashing)
+│   └── watcher.go             # File system watcher for auto-indexing (ignores .mcp_file_index.db)
+└── tools/
+    ├── register.go            # MCP tool registration and path resolution helpers
+    ├── args.go                # Argument extraction helpers (extractArg, extractOptional*, array helpers)
+    ├── create.go              # CreateItem tool handler (files, directories, archive entries)
+    ├── get.go                 # GetItem tool handler (read, list, info, compile, diff actions)
+    ├── edit.go                # EditItem tool handler (edit, delete, compress, extract actions)
+    ├── copy.go                # CopyItem tool handler (files and recursive directory copy)
+    ├── move.go                # MoveItem tool handler (rename/move with cross-filesystem fallback)
+    ├── search.go              # Search tool handler (name, regex, grep modes)
+    ├── compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection)
+    ├── utils.go               # Utility functions (MIME detection, archive I/O, sandbox validation, git commit)
+    ├── batch.go               # Batch operation handlers (batch create/edit/copy/move/get/search)
+    └── git.go                 # Git tool handler (status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert)
 ```
 
 ## Architecture
 
 - **MCP Server**: Uses [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go) library for MCP protocol compliance
-- **Database**: [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go SQLite implementation (no CGO required)
+- **Database**: [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go SQLite implementation (no CGO required, `CGO_ENABLED=0` builds supported)
 - **File Watching**: `github.com/fsnotify/fsnotify` for cross-platform file system event monitoring
 - **Compile Cache**: In-memory cache with configurable TTL (60 seconds default), auto-invalidated on file changes via watcher hooks
 - **Archive Cache**: In-memory cache for open archives (ZIP, TAR, TAR.GZ) with lazy loading
