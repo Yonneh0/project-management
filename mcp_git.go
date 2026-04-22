@@ -315,9 +315,34 @@ func gitCommit(dir string, message string, amend bool) *gitResult {
 	if amend {
 		args = []string{"commit", "--amend", "-m", message}
 	} else {
-		args = []string{"commit", "-m", message}
+		// Stage all changes before committing (so commit doesn't fail with "nothing to commit")
+		runGitCommand(dir, "add", "-A")
+		// Ignore result - we'll handle "nothing to commit" after the commit attempt
+
+		args = []string{"commit", "--no-gpg-sign", "-m", message}
 	}
-	return runGitCommand(dir, args...)
+
+	result := runGitCommand(dir, args...)
+
+	// Handle "nothing to commit" gracefully - return success with informative message
+	if result.ExitCode != 0 {
+		output := strings.ToLower(result.Stdout + " " + result.Stderr)
+		if strings.Contains(output, "nothing to commit") || strings.Contains(output, "working tree clean") {
+			return &gitResult{
+				ExitCode: 0,
+				Stdout:   "Nothing to commit (working tree clean)",
+			}
+		}
+		// Check for empty message error
+		if strings.Contains(output, "empty commit message") || strings.Contains(output, "abort") {
+			return &gitResult{
+				ExitCode: result.ExitCode,
+				Stderr:   result.Stderr,
+			}
+		}
+	}
+
+	return result
 }
 
 func gitPush(dir string, remote string, force bool) *gitResult {
