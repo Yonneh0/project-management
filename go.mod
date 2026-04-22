@@ -1,4 +1,4 @@
-module mcp-project-file-management
+module project-management
 
 go 1.26.2
 

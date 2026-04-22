@@ -41,7 +41,7 @@ func main() {
 	}
 	defer watcher.Close()
 
-	mcpServer := server.NewMCPServer("mcp-project-file-management", "1.0.0")
+	mcpServer := server.NewMCPServer("project-management", "1.0.0")
 	registerTools(mcpServer, store, targetDir)
 
 	if err := server.ServeStdio(mcpServer); err != nil {
