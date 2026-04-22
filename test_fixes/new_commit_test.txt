@@ -1,1 +1,1 @@
-New test file for git commit verification
+Modified content for git commit test - version 2!
