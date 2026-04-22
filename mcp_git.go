@@ -303,6 +303,14 @@ func gitAdd(dir string, files []string) *gitResult {
 }
 
 func gitCommit(dir string, message string, amend bool) *gitResult {
+	// Ensure git user config is set (required for commits on fresh repos)
+	configCheck := runGitCommand(dir, "config", "user.name")
+	if configCheck.ExitCode != 0 || strings.TrimSpace(configCheck.Stdout) == "" {
+		// Set default git config if not present
+		runGitCommand(dir, "config", "user.email", "mcp-tool@example.com")
+		runGitCommand(dir, "config", "user.name", "MCP Tool")
+	}
+
 	var args []string
 	if amend {
 		args = []string{"commit", "--amend", "-m", message}
@@ -328,14 +336,16 @@ func gitPull(dir string, remote string) *gitResult {
 }
 
 func gitBranch(dir string, action string, name string) *gitResult {
-	switch action {
-	case "list":
+	// Treat parent action names as aliases for list (e.g., "branch" -> "list")
+	if action == "branch" || action == "list" {
 		result := runGitCommand(dir, "branch", "-v")
 		if result.ExitCode == 0 && result.Stdout != "" {
 			parsed := parseGitBranchList(result.Stdout)
 			result.Parsed = parsed
 		}
 		return result
+	}
+	switch action {
 	case "create":
 		if name == "" {
 			return &gitResult{ExitCode: -1, Stderr: "branch name required for action=create"}
@@ -385,6 +395,15 @@ func parseGitBranchList(output string) []map[string]interface{} {
 }
 
 func gitStash(dir string, action string, message string) *gitResult {
+	// Treat parent action names as aliases for list (e.g., "stash" -> "list")
+	if action == "stash" || action == "list" {
+		result := runGitCommand(dir, "stash", "list")
+		if result.ExitCode == 0 && result.Stdout != "" {
+			parsed := parseGitStashList(result.Stdout)
+			result.Parsed = parsed
+		}
+		return result
+	}
 	switch action {
 	case "save":
 		var args []string
@@ -448,14 +467,16 @@ func gitClean(dir string, dryRun bool, directories bool) *gitResult {
 }
 
 func gitTag(dir string, action string, name string, message string) *gitResult {
-	switch action {
-	case "list":
+	// Treat parent action names as aliases for list (e.g., "tag" -> "list")
+	if action == "tag" || action == "list" {
 		result := runGitCommand(dir, "tag", "-l", "-n")
 		if result.ExitCode == 0 && result.Stdout != "" {
 			parsed := parseGitTagList(result.Stdout)
 			result.Parsed = parsed
 		}
 		return result
+	}
+	switch action {
 	case "create":
 		if name == "" {
 			return &gitResult{ExitCode: -1, Stderr: "tag name required for action=create"}
@@ -493,14 +514,16 @@ func parseGitTagList(output string) []map[string]interface{} {
 }
 
 func gitRemote(dir string, action string, name string, url string) *gitResult {
-	switch action {
-	case "list":
+	// Treat parent action names as aliases for list (e.g., "remote" -> "list")
+	if action == "remote" || action == "list" {
 		result := runGitCommand(dir, "remote", "-v")
 		if result.ExitCode == 0 && result.Stdout != "" {
 			parsed := parseGitRemoteList(result.Stdout)
 			result.Parsed = parsed
 		}
 		return result
+	}
+	switch action {
 	case "add":
 		if name == "" || url == "" {
 			return &gitResult{ExitCode: -1, Stderr: "remote name and URL required for action=add"}

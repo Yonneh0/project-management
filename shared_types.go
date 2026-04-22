@@ -310,6 +310,40 @@ func GetArchiveFormat(path string) string {
 	case ".7z":
 		return "7z"
 	default:
+		// Fallback: try magic byte detection for files without recognized extensions
+		return detectArchiveFormatByMagicBytes(path)
+	}
+}
+
+// detectArchiveFormatByMagicBytes detects archive format using file signature bytes.
+func detectArchiveFormatByMagicBytes(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
 		return ""
 	}
+	defer f.Close()
+
+	buf := make([]byte, 260) // Read enough bytes for any magic signature
+	n, err := f.Read(buf)
+	if err != nil || n < 4 {
+		return ""
+	}
+	buf = buf[:n]
+
+	// ZIP: PK\x03\x04 (0x50 0x4B 0x03 0x04)
+	if buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04 {
+		return "zip"
+	}
+
+	// GZIP: \x1f\x8b (0x1F 0x8B) - treat as tar.gz since we don't support raw gzip extraction
+	if buf[0] == 0x1F && buf[1] == 0x8B {
+		return "tar.gz"
+	}
+
+	// TAR: offset 257-262 should contain "ustar" for POSIX tar
+	if n >= 263 && string(buf[257:262]) == "ustar" {
+		return "tar"
+	}
+
+	return ""
 }

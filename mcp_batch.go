@@ -57,6 +57,19 @@ func (br *batchResult) String() string {
 			action, _ := result["action"].(string)
 			path, _ := result["path"].(string)
 			sb.WriteString(fmt.Sprintf("  OK: %s - %s\n", action, filepath.Base(path)))
+			// Include data content for read/list operations in batch mode
+			data, hasData := result["data"].(string)
+			if hasData && data != "" {
+				// Truncate very large outputs to keep response manageable
+				maxDisplayLen := 4000
+				if len(data) > maxDisplayLen {
+					sb.WriteString(fmt.Sprintf("    Content (truncated, %d bytes total):\n", len(data)))
+					sb.WriteString(data[:maxDisplayLen])
+					sb.WriteString("\n... [truncated]")
+				} else {
+					sb.WriteString(fmt.Sprintf("    Content:\n%s\n", data))
+				}
+			}
 		}
 	}
 	return sb.String()

@@ -143,6 +143,13 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ s
 
 	switch action {
 	case "archive-list":
+		// If archInfo is nil but path looks like an archive, try to open it directly
+		if archInfo == nil && IsArchiveFile(actualPath) || GetArchiveFormat(actualPath) != "" {
+			detectedArch, detErr := openArchive(actualPath)
+			if detErr == nil {
+				return mcp.NewToolResultText(listArchiveEntries(detectedArch)), nil
+			}
+		}
 		if !isArchive || archInfo == nil {
 			return mcp.NewToolResultError("path must be an archive file (e.g., 'archive.zip') for archive-list action"), nil
 		}

@@ -742,16 +742,16 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	var writer io.Writer = f
 	var gzWriter *gzip.Writer
+	var tarWriter *tar.Writer
+
 	if compressed {
 		gzWriter = gzip.NewWriter(f)
-		writer = gzWriter
+		tarWriter = tar.NewWriter(gzWriter)
+	} else {
+		tarWriter = tar.NewWriter(f)
 	}
-
-	tarWriter := tar.NewWriter(writer)
 
 	for name, entry := range info.Entries {
 		// Sanitize entry names when writing to prevent traversal in saved archives
@@ -785,16 +785,29 @@ func saveTarArchive(info *ArchiveInfo, compressed bool) error {
 		}
 	}
 
+	// Close tar writer first to flush all data
 	if err := tarWriter.Close(); err != nil {
+		f.Close()
+		os.Remove(tmpFile)
 		return fmt.Errorf("failed to finalize tar: %w", err)
 	}
 
+	// Close gzip writer second to flush compression data
 	if compressed && gzWriter != nil {
 		if err := gzWriter.Close(); err != nil {
+			f.Close()
+			os.Remove(tmpFile)
 			return fmt.Errorf("failed to finalize gzip: %w", err)
 		}
 	}
 
+	// Close the underlying file after tar/gzip writers are closed
+	if err := f.Close(); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("failed to close archive file: %w", err)
+	}
+
+	// Now safe to rename on Windows (no file handles open)
 	return os.Rename(tmpFile, info.Path)
 }
 
