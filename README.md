@@ -8,8 +8,7 @@ A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serv
 - **Unified CreateItem** — Create files or directories in a single tool with automatic parent directory creation and archive support
 - **Unified GetItem** — Read file content, list directories, get metadata, check compile status, compare files, or browse archives via an `action` parameter
 - **Unified EditItem** — Edit (find/replace), delete, compress to archive, or extract from archive in one tool
-- **CopyItem** — Copy files or recursively copy directories with full metadata reporting and MD5 verification
-- **MoveItem** — Move/rename files or directories with fallback for cross-filesystem operations
+- **Copy/Move actions in EditItem** — Copy files or recursively copy directories; move/rename files or directories with fallback for cross-filesystem operations
 - **Search** — Three search modes: substring name matching, Go regex on filenames, and grep (file content search)
 - **Compile Status** — Check build status for Node.js, Python, .NET, and Go projects with caching (60s TTL)
 - **Archive Support** — Read/write ZIP, TAR, TAR.GZ archives; compress files/folders; extract entries to filesystem
@@ -213,7 +212,7 @@ Edit, delete, compress, or extract files. Supports multiple operations via the `
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `path` | string | Yes | — | Absolute or relative path of the target. For archives use `archive.zip/path/entry` format. |
-| `action` | string | No | "edit" | Action: `edit`, `delete`, `compress`, `extract` |
+| `action` | string | No | "edit" | Action: `edit`, `delete`, `compress`, `extract`, `copy`, `move` |
 | `oldText` | string | No | — | For action=edit: text to find and replace |
 | `newText` | string | No | — | For action=edit: replacement text |
 | `count` | number | No | 1 | For action=edit: number of occurrences to replace (0 = all, default 1) |
@@ -229,36 +228,10 @@ Edit, delete, compress, or extract files. Supports multiple operations via the `
 - **`delete`**: Delete a file or directory. Directories require `recursive=true` if not empty. Returns error for missing items unless `ignoreMissing=true`.
 - **`compress`**: Compress file(s)/folder into an archive (.zip, .tar.gz). Supports adding to existing archives. Optional `deleteOriginalAfterCompress`.
 - **`extract`**: Extract from archive and write to filesystem. Use `path` as destination or `archive.zip/entry/path` format.
+- **`copy`**: Copy a file or directory from source to destination. Directories are copied recursively with full content preservation. Requires `destination` parameter. Supports `overwrite`.
+- **`move`**: Move/rename a file or directory from source to destination. Uses OS rename when possible, falls back to copy+delete for cross-filesystem moves. Requires `destination` parameter. Supports `overwrite`.
 
 **Supported archive formats:** ZIP, TAR, TAR.GZ (GZIP compressed)
-
----
-
-### `CopyItem`
-
-Copy a file or directory from source to destination. Directories are copied recursively with full content preservation. All changes are auto-committed to git when a project is open.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | string | Yes | — | Source file or directory path (absolute or relative) |
-| `destination` | string | Yes | — | Destination file or directory path (absolute or relative) |
-| `overwrite` | boolean | No | false | If true, overwrite existing destination |
-
-**Response includes:** Action type (Copied/Overwritten), source and destination paths (both absolute), full metadata for both files (size in human-readable and bytes, MIME type, modification time, permissions, MD5 hash), total bytes copied, operation elapsed time. For directories: recursive copy with byte count.
-
----
-
-### `MoveItem`
-
-Move or rename a file or directory. Directories are moved with all contents. Uses OS rename when possible, falls back to copy+delete for cross-filesystem moves. All changes are auto-committed to git when a project is open.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | string | Yes | — | Source file or directory path (absolute or relative) |
-| `destination` | string | Yes | — | Destination file or directory path (absolute or relative) |
-| `overwrite` | boolean | No | false | If true, overwrite existing destination |
-
-**Response includes:** Move type classification (Moved/Renamed based on whether same directory), source and destination paths, size in human-readable and bytes, modification time, MD5 hash of original, index update confirmation. For directories: recursive move with byte count.
 
 ---
 
@@ -294,9 +267,7 @@ Search for files and directories by name pattern, regex, or file content (grep).
 All tools support batch mode via array parameters for bulk operations with per-item success/failure reporting:
 
 - **CreateItem**: Provide `items` array — each item has `{path, content?, isFolder?, overwrite?}`
-- **EditItem**: Provide `edits` array — each edit has `{path, action?, oldText?, newText?, count?, compressToArchive?, extractFromArchive?}`
-- **CopyItem**: Provide `copies` array — each copy has `{source, destination, overwrite?}`
-- **MoveItem**: Provide `moves` array — each move has `{source, destination, overwrite?}`
+- **EditItem**: Provide `edits` array — each edit has `{path, action?, oldText?, newText?, count?, compressToArchive?, extractFromArchive?, destination?}` (destination required for copy/move actions)
 - **GetItem**: Provide `paths` array to read/list/info multiple items at once
 
 Batch responses include a summary with total/successful/failed counts and per-item status. Failed items show error messages while successful operations confirm completion.
@@ -396,9 +367,7 @@ project-management/
     ├── args.go                # Argument extraction helpers (extractArg, extractOptional*, array helpers)
     ├── create.go              # CreateItem tool handler (files, directories, archive entries)
     ├── get.go                 # GetItem tool handler (read, list, info, compile, diff actions)
-    ├── edit.go                # EditItem tool handler (edit, delete, compress, extract actions)
-    ├── copy.go                # CopyItem tool handler (files and recursive directory copy)
-    ├── move.go                # MoveItem tool handler (rename/move with cross-filesystem fallback)
+    ├── edit.go                # EditItem tool handler (edit, delete, compress, extract, copy, move actions; copy.go/move.go helpers)
     ├── search.go              # Search tool handler (name, regex, grep modes)
     ├── compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection)
     ├── utils.go               # Utility functions (MIME detection, archive I/O, sandbox validation, git commit)
@@ -423,7 +392,7 @@ This server uses a project context model where operations are scoped to an activ
 3. Paths outside the project boundary are rejected for safety
 4. **Call `CloseProject`** when done to reset the context
 
-This ensures that operations like `CreateItem`, `CopyItem`, etc. only affect files within the active project scope.
+This ensures that operations like `CreateItem`, `EditItem` (copy/move), etc. only affect files within the active project scope.
 
 ## Sandbox Security
 
@@ -451,9 +420,7 @@ When reading/writing archives, entry names are sanitized to prevent sandbox esca
 |-----------|---------------|---------------------|
 | CreateItem | ✅ resolvePathWithBoundaryCheck | ✅ sanitizeArchiveEntryPath |
 | GetItem (read/list/info) | ✅ resolvePathWithBoundaryCheck | ✅ validateInSandbox for diff file2 |
-| EditItem (edit/delete/compress/extract) | ✅ resolvePathWithBoundaryCheck | ✅ sanitizeArchiveEntryPath |
-| CopyItem | ✅ resolvePathWithBoundaryCheck (both source & dest) | N/A |
-| MoveItem | ✅ resolvePathWithBoundaryCheck (both source & dest) | N/A |
+| EditItem (edit/delete/compress/extract/copy/move) | ✅ resolvePathWithBoundaryCheck | ✅ sanitizeArchiveEntryPath |
 | Search | ✅ resolvePathWithBoundaryCheck + WalkDir boundary check | N/A |
 
 ## Data Model

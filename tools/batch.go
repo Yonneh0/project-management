@@ -267,6 +267,140 @@ func handleBatchEdit(req mcp.CallToolRequest, rootDir string) (*mcp.CallToolResu
 				})
 			}
 
+		case "copy":
+			srcResolved := resolvedPath
+			destPath := edit.Destination
+			if destPath == "" {
+				br.addError(i, "destination is required for copy action")
+				continue
+			}
+			dstResolved, resolveErr := resolvePathWithBoundaryCheck(rootDir, destPath)
+			if resolveErr != nil {
+				br.addError(i, fmt.Sprintf("destination path resolution failed: %v", resolveErr))
+				continue
+			}
+
+			srcInfo, statErr := os.Stat(srcResolved)
+			if statErr != nil {
+				br.addError(i, fmt.Sprintf("source not found: %s", edit.Path))
+				continue
+			}
+
+			var bytesCopied int64
+			if srcInfo.IsDir() {
+				copied, copyErr := copyDirectoryRecursive(srcResolved, dstResolved)
+				if copyErr != nil {
+					br.addError(i, fmt.Sprintf("copy directory failed: %v", copyErr))
+					continue
+				}
+				bytesCopied = copied
+			} else {
+				srcFile, openErr := os.Open(srcResolved)
+				if openErr != nil {
+					br.addError(i, fmt.Sprintf("failed to open source: %v", openErr))
+					continue
+				}
+
+				dstDir := filepath.Dir(dstResolved)
+				os.MkdirAll(dstDir, 0755)
+
+				destFile, createErr := os.Create(dstResolved)
+				if createErr != nil {
+					srcFile.Close()
+					br.addError(i, fmt.Sprintf("failed to create destination: %v", createErr))
+					continue
+				}
+
+				bytesCopied, err = io.Copy(destFile, srcFile)
+				srcFile.Close()
+				destFile.Close()
+				if err != nil {
+					os.Remove(dstResolved)
+					br.addError(i, fmt.Sprintf("copy failed: %v", err))
+					continue
+				}
+			}
+
+			pctx := pkg.GetGlobalProject()
+			if pctx != nil && pctx.Path != "" {
+				autoCommit(pctx.Path, "copy", srcResolved)
+			}
+
+			br.addSuccess(map[string]interface{}{
+				"index":  i,
+				"path":   dstResolved,
+				"action": "Copied",
+				"bytes":  bytesCopied,
+			})
+
+		case "move":
+			srcResolved := resolvedPath
+			destPath := edit.Destination
+			if destPath == "" {
+				br.addError(i, "destination is required for move action")
+				continue
+			}
+			dstResolved, resolveErr := resolvePathWithBoundaryCheck(rootDir, destPath)
+			if resolveErr != nil {
+				br.addError(i, fmt.Sprintf("destination path resolution failed: %v", resolveErr))
+				continue
+			}
+
+			srcInfo, statErr := os.Stat(srcResolved)
+			if statErr != nil {
+				br.addError(i, fmt.Sprintf("source not found: %s", edit.Path))
+				continue
+			}
+
+			var movedSize int64
+			if srcInfo.IsDir() {
+				_, copyErr := copyDirectoryRecursive(srcResolved, dstResolved)
+				if copyErr != nil {
+					br.addError(i, fmt.Sprintf("failed to fallback-copy directory: %v", copyErr))
+					continue
+				}
+				os.RemoveAll(srcResolved)
+				movedSize = srcInfo.Size()
+			} else {
+				err := os.Rename(srcResolved, dstResolved)
+				if err != nil {
+					srcFile, openErr := os.Open(srcResolved)
+					if openErr != nil {
+						br.addError(i, fmt.Sprintf("failed to move: %v", err))
+						continue
+					}
+					defer srcFile.Close()
+
+					destDir := filepath.Dir(dstResolved)
+					os.MkdirAll(destDir, 0755)
+
+					destFile, createErr := os.Create(dstResolved)
+					if createErr != nil {
+						br.addError(i, fmt.Sprintf("failed to move: %v", err))
+						continue
+					}
+
+					io.Copy(destFile, srcFile)
+					destFile.Close()
+					os.Remove(srcResolved)
+					movedSize = srcInfo.Size()
+				} else {
+					movedSize = srcInfo.Size()
+				}
+			}
+
+			pctx := pkg.GetGlobalProject()
+			if pctx != nil && pctx.Path != "" {
+				autoCommit(pctx.Path, "move", srcResolved)
+			}
+
+			br.addSuccess(map[string]interface{}{
+				"index":  i,
+				"path":   dstResolved,
+				"action": "Moved",
+				"bytes":  movedSize,
+			})
+
 		default:
 			br.addError(i, fmt.Sprintf("unknown edit action: %s", action))
 		}

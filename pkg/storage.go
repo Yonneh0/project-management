@@ -69,7 +69,7 @@ func (s *storageFileStore) load() error {
 		return err
 	}
 
-	// Skip non-JSON files (e.g., old SQLite database).
+	// Skip non-JSON files (e.g., old storage file from a previous version).
 	if len(data) > 0 && data[0] != '{' && data[0] != '[' {
 		fmt.Fprintf(os.Stderr, "storage: skipping non-JSON persistence file %s\n", s.persistPath)
 		return os.ErrNotExist

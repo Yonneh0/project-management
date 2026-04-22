@@ -205,6 +205,7 @@ type BatchEditItem struct {
 	Recursive                   bool   `json:"recursive,omitempty"`
 	IgnoreMissing               bool   `json:"ignoreMissing,omitempty"`
 	Format                      string `json:"format,omitempty"`
+	Destination                 string `json:"destination,omitempty"`
 }
 
 // extractOptionalBatchEdits extracts an optional array of batch edit items.
@@ -264,6 +265,9 @@ func extractOptionalBatchEdits(req mcp.CallToolRequest, key string) ([]BatchEdit
 		}
 		if format, ok := extractStringFromInterface(itemMap["format"]); ok {
 			item.Format = format
+		}
+		if destination, ok := extractStringFromInterface(itemMap["destination"]); ok {
+			item.Destination = destination
 		}
 		result = append(result, item)
 	}

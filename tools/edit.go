@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"project-management/core"
 	"project-management/pkg"
@@ -52,8 +54,15 @@ func handleEditItem(_ context.Context, req mcp.CallToolRequest, _ *pkg.FileStore
 		return handleCompressItem(pathStr, compressDest, deleteOriginal, pctx.Path)
 	case "extract":
 		return handleExtractItem(pathStr, extractSrc, rootDir)
+	case "copy", "move":
+		destPath, _ := extractOptionalString(req, "destination")
+		overwrite, _ := extractOptionalBool(req, "overwrite")
+		if action == "copy" {
+			return handleCopyInEdit(pathStr, pctx.Path, overwrite, destPath)
+		}
+		return handleMoveInEdit(pathStr, pctx.Path, overwrite, destPath)
 	default:
-		return mcp.NewToolResultError(fmt.Sprintf("unknown action: %s (valid: edit, delete, compress, extract)", action)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("unknown action: %s (valid: edit, delete, compress, extract, copy, move)", action)), nil
 	}
 }
 
@@ -323,4 +332,136 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func handleCopyInEdit(pathStr string, projectPath string, overwrite bool, destPath string) (*mcp.CallToolResult, error) {
+	resolvedSource, err := resolvePathWithBoundaryCheck(projectPath, pathStr)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("source path resolution failed: %v", err)), nil
+	}
+
+	if destPath == "" {
+		return mcp.NewToolResultError("destination is required for action=copy (use batch mode with destination field)"), nil
+	}
+
+	resolvedDest, err := resolvePathWithBoundaryCheck(projectPath, destPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("destination path resolution failed: %v", err)), nil
+	}
+
+	srcInfo, err := os.Stat(resolvedSource)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return mcp.NewToolResultText(fmt.Sprintf("Source not found: %s", resolvedSource)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("stat failed: %v", err)), nil
+	}
+
+	if _, err := os.Stat(resolvedDest); err == nil && !overwrite {
+		return mcp.NewToolResultText(fmt.Sprintf("Destination already exists: %s\nSet overwrite=true to replace.", resolvedDest)), nil
+	}
+
+	var bytesCopied int64
+	if srcInfo.IsDir() {
+		bytesCopied, err = copyDirectoryRecursive(resolvedSource, resolvedDest)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("copy directory failed: %v", err)), nil
+		}
+	} else {
+		srcFile, openErr := os.Open(resolvedSource)
+		if openErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to open source: %v", openErr)), nil
+		}
+		defer srcFile.Close()
+
+		destDir := filepath.Dir(resolvedDest)
+		os.MkdirAll(destDir, 0755)
+
+		destFile, createErr := os.Create(resolvedDest)
+		if createErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to create destination: %v", createErr)), nil
+		}
+
+		bytesCopied, err = io.Copy(destFile, srcFile)
+		destFile.Close()
+		if err != nil {
+			os.Remove(resolvedDest)
+			return mcp.NewToolResultError(fmt.Sprintf("copy failed: %v", err)), nil
+		}
+	}
+
+	autoCommit(projectPath, "copy", resolvedSource)
+
+	return mcp.NewToolResultText(fmt.Sprintf("Copied: %s -> %s\nSize: %s (%d bytes)\nAction: copy", resolvedSource, resolvedDest, humanReadableSize(bytesCopied), bytesCopied)), nil
+}
+
+func handleMoveInEdit(pathStr string, projectPath string, overwrite bool, destPath string) (*mcp.CallToolResult, error) {
+	resolvedSource, err := resolvePathWithBoundaryCheck(projectPath, pathStr)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("source path resolution failed: %v", err)), nil
+	}
+
+	if destPath == "" {
+		return mcp.NewToolResultError("destination is required for action=move (use batch mode with destination field)"), nil
+	}
+
+	resolvedDest, err := resolvePathWithBoundaryCheck(projectPath, destPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("destination path resolution failed: %v", err)), nil
+	}
+
+	srcInfo, err := os.Stat(resolvedSource)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return mcp.NewToolResultText(fmt.Sprintf("Source not found: %s", resolvedSource)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("stat failed: %v", err)), nil
+	}
+
+	srcSize := srcInfo.Size()
+	srcModTime := srcInfo.ModTime().UTC().Format(time.RFC3339)
+	srcMD5, _ := pkg.ComputeMD5(resolvedSource)
+
+	if _, err := os.Stat(resolvedDest); err == nil && !overwrite {
+		return mcp.NewToolResultText(fmt.Sprintf("Destination exists: %s\nSet overwrite=true to replace.", resolvedDest)), nil
+	}
+
+	isRename := filepath.Dir(filepath.Clean(resolvedSource)) == filepath.Dir(filepath.Clean(resolvedDest))
+	moveType := "Moved"
+	if isRename {
+		moveType = "Renamed"
+	}
+
+	err = os.Rename(resolvedSource, resolvedDest)
+	if err != nil {
+		if srcInfo.IsDir() {
+			_, copyErr := copyDirectoryRecursive(resolvedSource, resolvedDest)
+			if copyErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to fallback-copy directory: %v", copyErr)), nil
+			}
+			os.RemoveAll(resolvedSource)
+		} else {
+			srcFile, openErr := os.Open(resolvedSource)
+			if openErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to move (rename error: %v, fallback open error: %v)", err, openErr)), nil
+			}
+			defer srcFile.Close()
+
+			destDir := filepath.Dir(resolvedDest)
+			os.MkdirAll(destDir, 0755)
+
+			destFile, createErr := os.Create(resolvedDest)
+			if createErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to move (rename error: %v, create error: %v)", err, createErr)), nil
+			}
+
+			io.Copy(destFile, srcFile)
+			destFile.Close()
+			os.Remove(resolvedSource)
+		}
+	}
+
+	autoCommit(projectPath, "move", resolvedSource)
+
+	return mcp.NewToolResultText(fmt.Sprintf("%s: %s -> %s\nType: %s | Size: %s (%d bytes)\nOriginal modified: %s | MD5: %s", moveType, resolvedSource, resolvedDest, moveType, humanReadableSize(srcSize), srcSize, srcModTime, srcMD5)), nil
 }

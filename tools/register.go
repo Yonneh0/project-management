@@ -199,16 +199,17 @@ func RegisterTools(mcpServer *server.MCPServer, store *pkg.FileStore, rootDir st
 				"    - Use extractFromArchive parameter (e.g., 'archive.zip/entry/path')\n\n"+
 				"Batch mode:\n"+
 				"- Provide 'edits' array for batch operations (multiple files at once)\n"+
-				"- Each edit has: path, action, oldText, newText, count, compressToArchive, etc.",
+				"- Each edit has: path, action, oldText, newText, count, compressToArchive, destination",
 		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute or relative path of the target. For archives use 'archive.zip/path/entry' format.")),
-		mcp.WithString("action", mcp.DefaultString("edit"), mcp.Description("Action: edit, delete, compress, extract")),
+		mcp.WithString("action", mcp.DefaultString("edit"), mcp.Description("Action: edit, delete, compress, extract, copy, move")),
 		mcp.WithString("oldText", mcp.Description("For action=edit: text to find and replace (hex-encoded when format=hex)")),
 		mcp.WithString("newText", mcp.Description("For action=edit: replacement text (hex-encoded when format=hex)")),
 		mcp.WithNumber("count", mcp.DefaultNumber(1), mcp.Description("For action=edit: number of occurrences to replace (0 = all, default 1)")),
 		mcp.WithString("compressToArchive", mcp.Description("For action=compress: destination archive path (.zip, .tar.gz, etc.)")),
 		mcp.WithBoolean("deleteOriginalAfterCompress", mcp.DefaultBool(false), mcp.Description("For action=compress: delete source after compressing")),
 		mcp.WithString("extractFromArchive", mcp.Description("For action=extract: archive path to extract from (e.g., 'archive.zip/entry/path')")),
+		mcp.WithString("destination", mcp.Description("For action=copy/move: destination file or directory path (absolute or relative)")),
 		mcp.WithBoolean("recursive", mcp.DefaultBool(false), mcp.Description("For action=delete on directories: if true, delete all contents recursively")),
 		mcp.WithBoolean("ignoreMissing", mcp.DefaultBool(true), mcp.Description("For action=delete: return success instead of error when item doesn't exist")),
 		mcp.WithString("format", mcp.DefaultString("text"), mcp.Description("Input format for edit action: text (string matching, default) or hex (binary byte pattern replacement)")),
@@ -217,12 +218,13 @@ func RegisterTools(mcpServer *server.MCPServer, store *pkg.FileStore, rootDir st
 				"type": "object",
 				"properties": map[string]any{
 					"path":               map[string]any{"type": "string", "description": "Target path"},
-					"action":             map[string]any{"type": "string", "description": "Action: edit, delete, compress, extract"},
+					"action":             map[string]any{"type": "string", "description": "Action: edit, delete, compress, extract, copy, move"},
 					"oldText":            map[string]any{"type": "string", "description": "Find text for edit action"},
 					"newText":            map[string]any{"type": "string", "description": "Replacement text for edit action"},
 					"count":              map[string]any{"type": "integer", "description": "Occurrence count for edit action"},
 					"compressToArchive":  map[string]any{"type": "string", "description": "Archive destination for compress action"},
 					"extractFromArchive": map[string]any{"type": "string", "description": "Source archive for extract action"},
+					"destination":        map[string]any{"type": "string", "description": "Destination path for copy/move actions"},
 				},
 				"required": []string{"path"},
 			}),
@@ -236,80 +238,6 @@ func RegisterTools(mcpServer *server.MCPServer, store *pkg.FileStore, rootDir st
 		}
 
 		return handleEditItem(ctx, req, store, rootDir)
-	})
-
-	// ==================== CopyItem (CopyFile + directory support) ====================
-	copyItemTool := mcp.NewTool("CopyItem",
-		mcp.WithDescription(
-			"Copy a file or directory from source to destination. Directories are copied recursively.\n\n"+
-				"How to use:\n"+
-				"- Call OpenProject first to set the active project context\n"+
-				"- All changes are auto-committed to git\n"+
-				"- Set overwrite=true to replace existing destination\n\n"+
-				"Batch mode:\n"+
-				"- Provide 'copies' array for batch copy operations\n"+
-				"- Each copy has: source, destination, overwrite",
-		),
-		mcp.WithString("source", mcp.Required(), mcp.Description("Source file or directory path (absolute or relative)")),
-		mcp.WithString("destination", mcp.Required(), mcp.Description("Destination file or directory path (absolute or relative)")),
-		mcp.WithBoolean("overwrite", mcp.DefaultBool(false), mcp.Description("If true, overwrite existing destination")),
-		mcp.WithArray("copies", mcp.Description("Batch mode: array of copy operations. Each has {source, destination, overwrite?}"),
-			mcp.Items(map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"source":      map[string]any{"type": "string", "description": "Source path"},
-					"destination": map[string]any{"type": "string", "description": "Destination path"},
-					"overwrite":   map[string]any{"type": "boolean", "description": "Overwrite existing destination"},
-				},
-				"required": []string{"source", "destination"},
-			}),
-		),
-	)
-
-	mcpServer.AddTool(copyItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Check for batch mode first
-		if result, ok := handleBatchCopy(req, rootDir); ok {
-			return result, nil
-		}
-
-		return handleCopyItem(ctx, req, store, rootDir)
-	})
-
-	// ==================== MoveItem (MoveFile + directory support) ====================
-	moveItemTool := mcp.NewTool("MoveItem",
-		mcp.WithDescription(
-			"Move or rename a file or directory. Directories are moved with all contents.\n\n"+
-				"How to use:\n"+
-				"- Call OpenProject first to set the active project context\n"+
-				"- All changes are auto-committed to git\n"+
-				"- Set overwrite=true to replace existing destination\n\n"+
-				"Batch mode:\n"+
-				"- Provide 'moves' array for batch move operations\n"+
-				"- Each move has: source, destination, overwrite",
-		),
-		mcp.WithString("source", mcp.Required(), mcp.Description("Source file or directory path (absolute or relative)")),
-		mcp.WithString("destination", mcp.Required(), mcp.Description("Destination file or directory path (absolute or relative)")),
-		mcp.WithBoolean("overwrite", mcp.DefaultBool(false), mcp.Description("If true, overwrite existing destination")),
-		mcp.WithArray("moves", mcp.Description("Batch mode: array of move operations. Each has {source, destination, overwrite?}"),
-			mcp.Items(map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"source":      map[string]any{"type": "string", "description": "Source path"},
-					"destination": map[string]any{"type": "string", "description": "Destination path"},
-					"overwrite":   map[string]any{"type": "boolean", "description": "Overwrite existing destination"},
-				},
-				"required": []string{"source", "destination"},
-			}),
-		),
-	)
-
-	mcpServer.AddTool(moveItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Check for batch mode first
-		if result, ok := handleBatchMove(req, rootDir); ok {
-			return result, nil
-		}
-
-		return handleMoveItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== Search (with regex/grep support) ====================
