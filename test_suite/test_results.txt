@@ -1,2 +1,0 @@
-# MCP Project File Management - Unit Test Suite
-# This file documents all tests performed

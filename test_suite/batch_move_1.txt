@@ -1,3 +1,0 @@
-Test file for CopyItem - original content
-Line 2 of copy test
-Line 3 of copy test
