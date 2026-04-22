@@ -112,9 +112,17 @@ func handleCreateInArchive(archivePath, content string, isFolder bool, overwrite
 		if format == "" {
 			return mcp.NewToolResultError(fmt.Sprintf("unsupported archive format: %s", archFile)), nil
 		}
+		// Try to load existing entries from the archive file first (for non-cached archives)
+		existingEntries := make(map[string]pkg.ArchiveEntry)
+		if tmpInfo, tmpErr := openArchive(archFile); tmpErr == nil {
+			for k, v := range tmpInfo.Entries {
+				existingEntries[k] = v
+			}
+			pkg.CloseArchive(archFile)
+		}
 		archInfo = &pkg.ArchiveInfo{
 			Path:    archFile,
-			Entries: make(map[string]pkg.ArchiveEntry),
+			Entries: existingEntries,
 			Format:  format,
 			IsOpen:  true,
 		}

@@ -183,10 +183,13 @@ func GetGlobalProject() *ProjectContext {
 
 // ArchiveEntry represents a single entry within an archive.
 type ArchiveEntry struct {
-	Name    string
-	Content []byte
-	IsDir   bool
-	ModTime time.Time
+	Name       string
+	Content    []byte      // cached content (nil if lazy-loaded)
+	IsDir      bool
+	ModTime    time.Time
+	LazyLoad   bool        // true if content should be loaded on demand for large entries
+	SourcePath string      // path to archive file for lazy loading
+	EntrySize  int64       // uncompressed size of entry in archive
 }
 
 // ArchiveInfo holds metadata about an open/mounted archive.
@@ -202,6 +205,45 @@ var ArchiveCache = make(map[string]*ArchiveInfo)
 
 // ArchiveCacheMu protects ArchiveCache.
 var ArchiveCacheMu sync.RWMutex
+
+// maxArchivesInCache is the maximum number of archives to keep in memory at once.
+const maxArchivesInCache = 16
+
+// CloseArchive closes and removes an archive from the cache, freeing its entries.
+func CloseArchive(archivePath string) {
+	ArchiveCacheMu.Lock()
+	defer ArchiveCacheMu.Unlock()
+
+	if info, ok := ArchiveCache[archivePath]; ok {
+		info.IsOpen = false
+		info.Entries = nil // Free memory held by entries
+		delete(ArchiveCache, archivePath)
+	}
+}
+
+// EvictOldestArchive removes the oldest archive from the cache when it's full.
+func EvictOldestArchive() {
+	if len(ArchiveCache) >= maxArchivesInCache {
+		// Remove the first entry (simple FIFO eviction)
+		for path := range ArchiveCache {
+			ArchiveCache[path].IsOpen = false
+			ArchiveCache[path].Entries = nil
+			delete(ArchiveCache, path)
+			return
+		}
+	}
+}
+
+// CloseAllArchives closes and removes all archives from the cache.
+func CloseAllArchives() {
+	ArchiveCacheMu.Lock()
+	defer ArchiveCacheMu.Unlock()
+	for _, info := range ArchiveCache {
+		info.IsOpen = false
+		info.Entries = nil
+	}
+	ArchiveCache = make(map[string]*ArchiveInfo)
+}
 
 // IsWithinProject checks if a resolved absolute path is within the current project root.
 func IsWithinProject(path string) bool {

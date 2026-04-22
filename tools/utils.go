@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -17,6 +18,13 @@ import (
 
 	"project-management/pkg"
 )
+
+// archiveLazyLoadThreshold is the size threshold above which entries are loaded lazily.
+// Entries smaller than this are loaded into memory immediately (fast path).
+const archiveLazyLoadThreshold = 1 * 1024 * 1024 // 1MB
+
+// archiveChunkSize is the chunk size used when reading large archive entries.
+const archiveChunkSize = 64 * 1024 // 64KB
 
 func detectMIMEType(path string) string {
 	f, err := os.Open(path)
@@ -515,6 +523,9 @@ func openArchive(archivePath string) (*pkg.ArchiveInfo, error) {
 	}
 	pkg.ArchiveCacheMu.RUnlock()
 
+	// Evict oldest archive if cache is full (before adding new entry)
+	pkg.EvictOldestArchive()
+
 	format := pkg.GetArchiveFormat(archivePath)
 	if format == "" {
 		return nil, fmt.Errorf("unsupported archive format")
@@ -563,18 +574,25 @@ func loadZipArchive(info *pkg.ArchiveInfo) error {
 
 	for _, f := range reader.File {
 		entry := pkg.ArchiveEntry{
-			Name:    f.Name,
-			IsDir:   f.FileInfo().IsDir(),
-			ModTime: f.ModTime(),
+			Name:       f.Name,
+			IsDir:      f.FileInfo().IsDir(),
+			ModTime:    f.ModTime(),
+			SourcePath: info.Path,
+			EntrySize:  int64(f.UncompressedSize64),
 		}
 
 		if !f.FileInfo().IsDir() {
-			rc, err := f.Open()
-			if err != nil {
-				continue
+			if f.UncompressedSize64 > archiveLazyLoadThreshold {
+				// Mark as lazy-load; content loaded on demand via ensureContent
+				entry.LazyLoad = true
+			} else {
+				rc, err := f.Open()
+				if err != nil {
+					continue
+				}
+				entry.Content, _ = io.ReadAll(rc)
+				rc.Close()
 			}
-			entry.Content, _ = io.ReadAll(rc)
-			rc.Close()
 		}
 
 		info.Entries[f.Name] = entry
@@ -609,13 +627,19 @@ func loadTarArchive(info *pkg.ArchiveInfo, archivePath string, compressed bool) 
 		}
 
 		entry := pkg.ArchiveEntry{
-			Name:    header.Name,
-			IsDir:   header.Typeflag == tar.TypeDir,
-			ModTime: header.ModTime,
+			Name:       header.Name,
+			IsDir:      header.Typeflag == tar.TypeDir,
+			ModTime:    header.ModTime,
+			SourcePath: archivePath,
+			EntrySize:  header.Size,
 		}
 
 		if header.Typeflag == tar.TypeReg {
-			entry.Content, _ = io.ReadAll(tarReader)
+			if header.Size > archiveLazyLoadThreshold {
+				entry.LazyLoad = true
+			} else {
+				entry.Content, _ = io.ReadAll(tarReader)
+			}
 		}
 
 		info.Entries[header.Name] = entry
@@ -655,6 +679,19 @@ func saveZipArchive(info *pkg.ArchiveInfo) error {
 		if entry.IsDir {
 			di, _ := writer.Create(sanitizedName + "/")
 			_ = di
+		} else if len(entry.Content) == 0 && entry.LazyLoad && entry.SourcePath != "" {
+			// Lazy-loaded entry: re-read from source archive using chunked I/O before writing
+			lazyContent, lazyErr := readArchiveEntryChunked(entry.SourcePath, sanitizedName, false)
+			if lazyErr != nil {
+				log.Printf("warning: failed to re-read lazy entry %q during save: %v", name, lazyErr)
+				continue
+			}
+			entry.Content = lazyContent
+			w, err := writer.Create(sanitizedName)
+			if err != nil {
+				continue
+			}
+			w.Write(entry.Content)
 		} else {
 			w, err := writer.Create(sanitizedName)
 			if err != nil {
@@ -710,7 +747,18 @@ func saveTarArchive(info *pkg.ArchiveInfo, compressed bool) error {
 			header.Mode = 0755
 			header.Name = sanitizedName + "/"
 		} else if len(entry.Content) == 0 && !entry.IsDir {
-			continue
+			// Lazy-loaded or empty entry: re-read from source archive using chunked I/O
+			if entry.LazyLoad && entry.SourcePath != "" {
+				lazyContent, lazyErr := readArchiveEntryChunked(entry.SourcePath, sanitizedName, false)
+				if lazyErr != nil {
+					log.Printf("warning: failed to re-read lazy entry %q during save: %v", name, lazyErr)
+					continue
+				}
+				entry.Content = lazyContent
+				header.Size = int64(len(lazyContent))
+			} else {
+				continue
+			}
 		}
 
 		if err := tarWriter.WriteHeader(header); err != nil {
@@ -744,6 +792,127 @@ func saveTarArchive(info *pkg.ArchiveInfo, compressed bool) error {
 	return os.Rename(tmpFile, info.Path)
 }
 
+// ensureContent loads the content of a lazy-loaded archive entry from disk.
+// It opens the archive, reads the specific entry using chunked I/O, and caches it.
+func ensureContent(entry *pkg.ArchiveEntry) error {
+	if entry == nil || entry.Content != nil || !entry.LazyLoad {
+		return nil // already loaded or not lazy
+	}
+
+	if entry.SourcePath == "" {
+		return fmt.Errorf("lazy entry has no source path: %s", entry.Name)
+	}
+
+	content, err := readArchiveEntryChunked(entry.SourcePath, entry.Name, entry.IsDir)
+	if err != nil {
+		return fmt.Errorf("failed to load lazy entry %q: %w", entry.Name, err)
+	}
+
+	entry.Content = content
+	entry.LazyLoad = false
+	return nil
+}
+
+// readArchiveEntryChunked reads an archive entry's content using chunked I/O.
+func readArchiveEntryChunked(archivePath, entryName string, isDir bool) ([]byte, error) {
+	if isDir {
+		return []byte{}, nil
+	}
+
+	switch pkg.GetArchiveFormat(archivePath) {
+	case "zip":
+		return readZipEntryChunked(archivePath, entryName)
+	case "tar", "tar.gz":
+		return readTarEntryChunked(archivePath, entryName, pkg.GetArchiveFormat(archivePath) == "tar.gz")
+	default:
+		return nil, fmt.Errorf("unsupported archive format for reading: %s", pkg.GetArchiveFormat(archivePath))
+	}
+}
+
+// readZipEntryChunked reads a specific file from a zip archive using chunked I/O.
+func readZipEntryChunked(archivePath, entryName string) ([]byte, error) {
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	for _, f := range reader.File {
+		if f.Name == entryName {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+
+			// Use a buffer pool for efficient chunked reading
+			buf := make([]byte, 0, f.UncompressedSize64+archiveChunkSize)
+			chunk := make([]byte, archiveChunkSize)
+			for {
+				n, readErr := rc.Read(chunk)
+				if n > 0 {
+					buf = append(buf, chunk[:n]...)
+				}
+				if readErr == io.EOF {
+					break
+				}
+				if readErr != nil {
+					return buf, readErr
+				}
+			}
+			return buf, nil
+		}
+	}
+	return nil, fmt.Errorf("entry not found in zip archive: %s", entryName)
+}
+
+// readTarEntryChunked reads a specific file from a tar/tar.gz archive using chunked I/O.
+func readTarEntryChunked(archivePath, entryName string, compressed bool) ([]byte, error) {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var reader io.Reader = f
+	if compressed {
+		reader, err = gzip.NewReader(reader)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	tarReader := tar.NewReader(reader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		if header.Name == entryName && header.Typeflag == tar.TypeReg {
+			buf := make([]byte, 0, header.Size+archiveChunkSize)
+			chunk := make([]byte, archiveChunkSize)
+			for {
+				n, readErr := tarReader.Read(chunk)
+				if n > 0 {
+					buf = append(buf, chunk[:n]...)
+				}
+				if readErr == io.EOF {
+					break
+				}
+				if readErr != nil && readErr != io.EOF {
+					return buf, readErr
+				}
+			}
+			return buf, nil
+		}
+	}
+	return nil, fmt.Errorf("entry not found in tar archive: %s", entryName)
+}
+
 func listArchiveEntries(info *pkg.ArchiveInfo) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("=== Archive: %s ===\n", filepath.Base(info.Path)))
@@ -756,8 +925,12 @@ func listArchiveEntries(info *pkg.ArchiveInfo) string {
 			dirCount++
 			sb.WriteString(fmt.Sprintf("[D] %s/\n", name))
 		} else {
+			size := entry.EntrySize
+			if size == 0 && entry.Content != nil {
+				size = int64(len(entry.Content))
+			}
 			fileCount++
-			sb.WriteString(fmt.Sprintf("[F] %s (%d bytes)\n", name, len(entry.Content)))
+			sb.WriteString(fmt.Sprintf("[F] %s (%d bytes)\n", name, size))
 		}
 	}
 
@@ -769,6 +942,15 @@ func readArchiveFile(info *pkg.ArchiveInfo, entryPath string) ([]byte, bool) {
 	entry, ok := info.Entries[entryPath]
 	if !ok || entry.IsDir {
 		return nil, false
+	}
+	// Ensure content is loaded (triggers lazy load if needed)
+	if entry.LazyLoad {
+		if err := ensureContent(&entry); err != nil {
+			log.Printf("warning: failed to lazy-load archive entry %q: %v", entryPath, err)
+			return nil, false
+		}
+		// Update the entry in the map with loaded content
+		info.Entries[entryPath] = entry
 	}
 	return entry.Content, true
 }
@@ -901,6 +1083,14 @@ func extractFromArchive(archivePath string, entryPath string, destPath string) (
 	entry, ok := archInfo.Entries[sanitizedEntry]
 	if !ok || entry.IsDir {
 		return "", fmt.Errorf("entry not found in archive: %s", entryPath)
+	}
+
+	// Ensure content is loaded (triggers lazy load for large entries)
+	if entry.LazyLoad {
+		if err := ensureContent(&entry); err != nil {
+			return "", fmt.Errorf("failed to extract large entry '%s': %w", entryPath, err)
+		}
+		archInfo.Entries[sanitizedEntry] = entry
 	}
 
 	destDir := filepath.Dir(destPath)
