@@ -109,12 +109,6 @@ func HandleListProjects(rootDir string) (*mcp.CallToolResult, error) {
 		gitDir := filepath.Join(dirPath, ".git")
 		projectInfo["hasGit"] = pkg.DirExists(gitDir)
 
-		// Count files
-		fileCount := 0
-		walkFn := func() os.FileInfo { return nil } // placeholder
-		_ = walkFn
-		_ = fileCount
-
 		projectInfos = append(projectInfos, projectInfo)
 	}
 

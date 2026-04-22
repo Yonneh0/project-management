@@ -337,47 +337,6 @@ func RegisterTools(mcpServer *server.MCPServer, store *pkg.FileStore, rootDir st
 	})
 }
 
-// ==================== Helper: ValidateProjectActive ====================
-
-// validateProjectActive checks if a project is currently open.
-func validateProjectActive() error {
-	pctx := getGlobalProject()
-	if pctx == nil || pctx.Path == "" {
-		return fmt.Errorf("no project open. Call OpenProject first to set the active project context")
-	}
-	return nil
-}
-
-// ==================== Helper: Resolve and Validate Path ====================
-
-// resolveAndValidatePath resolves a path relative to the current project.
-func resolveAndValidatePath(rootDir, path string) (string, error) {
-	pctx := getGlobalProject()
-	if pctx == nil || pctx.Path == "" {
-		// No project open, use rootDir directly
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(rootDir, path)
-		}
-		return filepath.Clean(path), nil
-	}
-
-	// Resolve relative to current project
-	var resolved string
-	if filepath.IsAbs(path) {
-		resolved = filepath.Clean(path)
-	} else {
-		resolved = filepath.Join(pctx.Path, path)
-	}
-	resolved = filepath.Clean(resolved)
-
-	// Check boundary if within project scope
-	if !isWithinProject(resolved) {
-		return "", fmt.Errorf("path '%s' is outside the open project '%s'", path, pctx.Path)
-	}
-
-	return resolved, nil
-}
-
 // ==================== Helper: Auto-Commit ====================
 
 func autoCommit(projectPath, operation, targetPath string) error {
@@ -387,8 +346,8 @@ func autoCommit(projectPath, operation, targetPath string) error {
 
 // ==================== Helper: Check Project Context for Path Resolution ====================
 
-// resolvePath resolves a path relative to the current project or root directory.
-func resolvePath(rootDir, path string) (string, error) {
+// resolvePathInternal resolves a path relative to the current project or root directory.
+func resolvePathInternal(rootDir, path string) (string, error) {
 	pctx := getGlobalProject()
 	if pctx != nil && pctx.Path != "" {
 		if !filepath.IsAbs(path) {
@@ -406,7 +365,7 @@ func resolvePath(rootDir, path string) (string, error) {
 
 // resolvePathWithBoundaryCheck resolves a path and validates it's within the project.
 func resolvePathWithBoundaryCheck(rootDir, path string) (string, error) {
-	resolved, err := resolvePath(rootDir, path)
+	resolved, err := resolvePathInternal(rootDir, path)
 	if err != nil {
 		return "", err
 	}

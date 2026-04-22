@@ -192,7 +192,6 @@ func (s *FileStore) updateParentDirStats(path string) error {
 	isDir = rec.IsDir
 
 	var totalSize int64 = 0
-	var fileCount int = 0
 
 	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -205,7 +204,6 @@ func (s *FileStore) updateParentDirStats(path string) error {
 				return infoErr
 			}
 			totalSize += info.Size()
-			fileCount++
 		}
 		return nil
 	})
