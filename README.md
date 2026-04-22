@@ -122,13 +122,14 @@ Open an existing project or create a new one. Sets the active project context fo
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `path` | string | No | "" | Project path (absolute or relative to rootDir). Empty = auto-generate YYYYMMDD name. |
+| `listProjects` | boolean | No | false | If true, list available projects instead of opening one. Returns array of project metadata. Does NOT require an open project context. |
 
 **Behavior:**
 - If `path` is empty: Auto-generates a `YYYYMMDD`-named project folder and initializes git
 - If `path` exists as directory: Opens it as the current project (initializes git if needed)
 - If `path` doesn't exist: Creates it and initializes git
 
-**Response:** Project path, name hint, and creation status.
+**Response:** Project path, name hint, and creation status. When using `listProjects=true`, returns an array of available projects with their paths, names, and metadata.
 
 ---
 
@@ -286,6 +287,55 @@ Search for files and directories by name pattern, regex, or file content (grep).
 
 ---
 
+### Batch Operations
+
+All tools support batch mode via array parameters for bulk operations with per-item success/failure reporting:
+
+- **CreateItem**: Provide `items` array — each item has `{path, content?, isFolder?, overwrite?}`
+- **EditItem**: Provide `edits` array — each edit has `{path, action?, oldText?, newText?, count?, compressToArchive?, extractFromArchive?}`
+- **CopyItem**: Provide `copies` array — each copy has `{source, destination, overwrite?}`
+- **MoveItem**: Provide `moves` array — each move has `{source, destination, overwrite?}`
+- **GetItem**: Provide `paths` array to read/list/info multiple items at once
+
+Batch responses include a summary with total/successful/failed counts and per-item status. Failed items show error messages while successful operations confirm completion.
+
+---
+
+### Multi-Root Search
+
+The `Search` tool supports searching across multiple root directories simultaneously via the `paths` parameter (array of paths). Each result includes a `root` field indicating which search root it was found in. This is useful for searching across unrelated directories or workspaces.
+
+---
+
+### Git Tool
+
+Execute git commands within a project directory. Supports all major git operations:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `action` | string | Yes | — | Git action: status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert |
+| `path` | string | No | (open project) | Project directory (defaults to open project path) |
+| `args` | array | No | — | Additional raw git arguments passed directly |
+
+**Actions:**
+
+- **status**: Working tree status — branch info, staged/unstaged changes, untracked files
+- **log**: Commit history — use `maxCount=N`, `format=json\|short\|fuller\|oneline`
+- **diff**: Unstaged or staged changes — use `staged=true` for staged changes
+- **add**: Stage files — provide `files` array with paths to stage
+- **commit**: Create a commit — required: `message`, optional: `amend=true`
+- **push/pull**: Push/pull from remote — remote defaults to 'origin'
+- **branch**: List/create/switch branches — actions: list (default), create, delete, switch
+- **stash**: Stash/unstash changes — actions: save (default), pop, list, apply
+- **reset**: Reset working tree — modes: soft, mixed (default), hard
+- **clean**: Remove untracked files — `dryRun=true` shows what would be deleted
+- **tag**: List/create tags — actions: list (default), create, delete
+- **remote**: Manage remotes — actions: list (default), add, remove, set-url
+- **checkout**: Switch branches or restore files — required: `target` parameter
+- **revert**: Revert a commit — required: `commit` parameter
+
+---
+
 ### Compile Status (via GetItem action="compile")
 
 Check compile/build status for projects using various runtimes (Node.js, Python, .NET, Go). Scans the specified directory for project files and reports the status of each runtime. Results are cached for 60 seconds with automatic invalidation on file changes.
@@ -308,7 +358,7 @@ mcp-project-file-management/
 ├── watcher.go                 # File system watcher for auto-indexing (ignores .mcp_file_index.db)
 ├── newproject.go              # OpenProject/CloseProject project lifecycle with git initialization
 ├── mcp_tools.go               # MCP tool registration and path resolution helpers
-├── mcp_args.go                # Argument extraction helpers (extractArg, extractOptional*)
+├── mcp_args.go                # Argument extraction helpers (extractArg, extractOptional*, array helpers)
 ├── mcp_create.go              # CreateItem tool handler (files, directories, archive entries)
 ├── mcp_get.go                 # GetItem tool handler (read, list, info, compile, diff actions)
 ├── mcp_edit.go                # EditItem tool handler (edit, delete, compress, extract actions)
@@ -317,6 +367,8 @@ mcp-project-file-management/
 ├── mcp_search.go              # Search tool handler (name, regex, grep modes)
 ├── mcp_compile.go             # Compile status helpers (Node.js, Python, .NET, Go detection)
 ├── mcp_utils.go               # Utility functions (MIME detection, archive I/O, sandbox validation, git commit)
+├── mcp_batch.go               # Batch operation handlers (batch create/edit/copy/move/get/search)
+├── mcp_git.go                 # Git tool handler (status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert)
 ├── sandbox_test.go            # Unit tests for sandbox security (sanitizeArchiveEntryPath, validateInSandbox)
 ├── go.mod                     # Go module definition
 ├── go.sum                     # Dependency checksums

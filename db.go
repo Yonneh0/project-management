@@ -159,6 +159,10 @@ type SearchResult struct {
 }
 
 func (s *fileStore) SearchFiles(pattern string, limit int) (*SearchResult, error) {
+	// Ensure minimum limit of 1 to prevent SQLite from returning all rows
+	if limit <= 0 {
+		limit = 1
+	}
 	query := "SELECT path, name, size, mod_time, md5_hash, is_dir FROM files WHERE path LIKE ? LIMIT ?"
 	rows, err := s.db.Query(query, "%"+pattern+"%", limit)
 	if err != nil {

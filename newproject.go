@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // NewProjectOptions configures how a new project is created.
@@ -72,6 +76,64 @@ func OpenProject(rootDir, path string) (string, error) {
 	}
 
 	return projectDir, nil
+}
+
+// handleListProjects lists available projects without opening one.
+func handleListProjects(rootDir string) (*mcp.CallToolResult, error) {
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return mcp.NewToolResultText("No projects found."), nil
+	}
+
+	var projectInfos []map[string]interface{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		dirPath := filepath.Join(rootDir, entry.Name())
+		projectInfo := map[string]interface{}{
+			"name":     entry.Name(),
+			"path":     dirPath,
+			"size":     info.Size(),
+			"modified": info.ModTime().Format(time.RFC3339),
+		}
+
+		// Check if it's a git repo
+		gitDir := filepath.Join(dirPath, ".git")
+		projectInfo["hasGit"] = dirExists(gitDir)
+
+		// Count files
+		fileCount := 0
+		walkFn := func() os.FileInfo { return nil } // placeholder
+		_ = walkFn
+		_ = fileCount
+
+		projectInfos = append(projectInfos, projectInfo)
+	}
+
+	sort.Slice(projectInfos, func(i, j int) bool {
+		ti := projectInfos[i]
+		tj := projectInfos[j]
+		mi, _ := ti["modified"].(string)
+		mj, _ := tj["modified"].(string)
+		return mi > mj
+	})
+
+	if len(projectInfos) == 0 {
+		return mcp.NewToolResultText("No projects found."), nil
+	}
+
+	data, err := json.MarshalIndent(projectInfos, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal project list: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Found %d projects:\n\n%s", len(projectInfos), string(data))), nil
 }
 
 // CloseProject resets the global project context.

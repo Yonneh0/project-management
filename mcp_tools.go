@@ -15,17 +15,29 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 
 	// ==================== OpenProject ====================
 	openProjectTool := mcp.NewTool("OpenProject",
-		mcp.WithDescription("Open an existing project or create a new one. Sets the active project context for all subsequent operations.\n\n"+
-			"- If path is empty: auto-generates a YYYYMMDD-named project folder and initializes git.\n"+
-			"- If path exists as directory: opens it as the current project (initializes git if needed).\n"+
-			"- If path doesn't exist: creates it and initializes git."),
+		mcp.WithDescription(
+			"Open an existing project or create a new one. Sets the active project context for all subsequent operations.\n\n"+
+				"How to use:\n"+
+				"- Call this FIRST before any file operations (CreateItem, GetItem, EditItem, etc.)\n"+
+				"- Use listProjects=true to discover available projects without opening one\n"+
+				"- If path is empty: auto-generates a YYYYMMDD-named project folder and initializes git\n"+
+				"- If path exists as directory: opens it as the current project (initializes git if needed)\n"+
+				"- If path doesn't exist: creates it and initializes git",
+		),
 		mcp.WithString("path", mcp.Description("Project path (absolute or relative to rootDir). Empty = auto-generate YYYYMMDD name.")),
+		mcp.WithBoolean("listProjects", mcp.DefaultBool(false), mcp.Description("If true, list available projects instead of opening one. Returns array of project metadata. Does NOT require an open project context.")),
 	)
 
 	mcpServer.AddTool(openProjectTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		path, err := extractArg[string](req, "path")
 		if err != nil {
 			path = "" // empty means auto-generate
+		}
+
+		listProjects, _ := extractOptionalBool(req, "listProjects")
+
+		if listProjects {
+			return handleListProjects(rootDir)
 		}
 
 		projectDir, err := OpenProject(rootDir, path)
@@ -48,7 +60,12 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 
 	// ==================== CloseProject ====================
 	closeProjectTool := mcp.NewTool("CloseProject",
-		mcp.WithDescription("Close the current project and reset the global context."),
+		mcp.WithDescription(
+			"Close the current project and reset the global context.\n\n"+
+				"How to use:\n"+
+				"- Call this when done with a project to free resources\n"+
+				"- All tools will require an OpenProject call before use after closing",
+		),
 	)
 
 	mcpServer.AddTool(closeProjectTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -58,24 +75,60 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 
 	// ==================== CreateItem (CreateFile + CreateFolder) ====================
 	createItemTool := mcp.NewTool("CreateItem",
-		mcp.WithDescription("Create a new file or directory at the specified path. Automatically creates parent directories.\n\n"+
-			"Requires an active project context (call OpenProject first).\n"+
-			"All changes are auto-committed to git."),
+		mcp.WithDescription(
+			"Create a new file or directory at the specified path. Automatically creates parent directories.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- For files: provide path and content parameters\n"+
+				"- For folders: set isFolder=true\n"+
+				"- All changes are auto-committed to git\n\n"+
+				"Batch mode:\n"+
+				"- Provide 'items' array for batch creation (multiple files/folders at once)\n"+
+				"- Each item has: path, content (files only), isFolder, overwrite",
+		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute or relative path where the item should be created")),
 		mcp.WithString("content", mcp.Description("Content to write to the file (required for files, optional for folders)")),
 		mcp.WithBoolean("isFolder", mcp.DefaultBool(false), mcp.Description("If true, create a folder instead of a file")),
 		mcp.WithBoolean("overwrite", mcp.DefaultBool(false), mcp.Description("For files: if true, overwrite existing file. For folders: if true, return success when folder exists")),
+		mcp.WithArray("items", mcp.Description("Batch mode: array of items to create. Each item has {path, content?, isFolder?, overwrite?}"),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":      map[string]any{"type": "string", "description": "Path for this item"},
+					"content":   map[string]any{"type": "string", "description": "Content for file items"},
+					"isFolder":  map[string]any{"type": "boolean", "description": "If true, create as folder"},
+					"overwrite": map[string]any{"type": "boolean", "description": "If true, overwrite existing"},
+				},
+				"required": []string{"path"},
+			}),
+		),
 	)
 
 	mcpServer.AddTool(createItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for batch mode first
+		if result, ok := handleBatchCreate(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleCreateItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== GetItem (GetDirectory + ReadFile + GetFileInfo + CompileStatus + CompareFile) ====================
 	getItemTool := mcp.NewTool("GetItem",
-		mcp.WithDescription("Read file content, list directory contents, get metadata, check compile status, or compare files.\n\n"+
-			"Requires an active project context (call OpenProject first).\n"+
-			"Supports archive paths like 'archive.zip/subdir/file.txt'."),
+		mcp.WithDescription(
+			"Read file content, list directory contents, get metadata, check compile status, or compare files.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- Use action=auto to let the tool detect whether path is a file or directory\n"+
+				"- For file content: use action=read (default for files)\n"+
+				"- For directory listing: use action=list (default for directories)\n"+
+				"- For metadata only: use action=info with length=0\n"+
+				"- For build status: use action=compile\n"+
+				"- For comparing two files: use action=diff with file2 parameter\n"+
+				"- Supports archive paths like 'archive.zip/subdir/file.txt'\n\n"+
+				"Batch mode:\n"+
+				"- Provide 'paths' array to get multiple items at once",
+		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute or relative path of the item")),
 		mcp.WithString("action", mcp.DefaultString("auto"), mcp.Description("Action: auto (detect), read (file content), list (directory contents), info (metadata only), compile (build status), diff (compare with file2), archive-list (list archive contents)")),
 		mcp.WithNumber("offset", mcp.DefaultNumber(0), mcp.Description("Byte offset for file reading (0 = start)")),
@@ -94,22 +147,44 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 		mcp.WithBoolean("ignoreWhitespace", mcp.DefaultBool(false), mcp.Description("For diff: ignore leading/trailing whitespace")),
 		mcp.WithBoolean("ignoreCase", mcp.DefaultBool(false), mcp.Description("For diff: case-insensitive comparison")),
 		mcp.WithBoolean("noCache", mcp.DefaultBool(false), mcp.Description("For compile: bypass cache")),
+		mcp.WithArray("paths", mcp.Description("Batch mode: array of paths to get. Returns per-path results with success/failure status."),
+			mcp.WithStringItems(),
+		),
 	)
 
 	mcpServer.AddTool(getItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for batch mode first
+		if result, ok := handleBatchGet(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleGetItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== EditItem (Edit + Delete + Compress + Extract) ====================
 	editItemTool := mcp.NewTool("EditItem",
-		mcp.WithDescription("Edit, delete, compress, or extract files. Supports multiple operations via the 'action' parameter.\n\n"+
-			"Requires an active project context (call OpenProject first).\n"+
-			"All changes are auto-committed to git.\n\n"+
-			"Actions:\n"+
-			"  edit: Find and replace text in a file (default)\n"+
-			"  delete: Delete a file or directory\n"+
-			"  compress: Compress file(s)/folder into an archive\n"+
-			"  extract: Extract from archive and edit in place"),
+		mcp.WithDescription(
+			"Edit, delete, compress, or extract files. Supports multiple operations via the 'action' parameter.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- All changes are auto-committed to git\n\n"+
+				"Actions:\n"+
+				"  edit: Find and replace text in a file (default)\n"+
+				"    - Provide oldText and newText parameters\n"+
+				"    - Use count=0 to replace all occurrences (default is 1)\n"+
+				"    - Use format=hex for binary pattern replacement\n"+
+				"  delete: Delete a file or directory\n"+
+				"    - Set recursive=true for directories\n"+
+				"    - ignoreMissing=true returns success if item doesn't exist (default)\n"+
+				"  compress: Compress file(s)/folder into an archive\n"+
+				"    - Provide compressToArchive with destination path (.zip, .tar.gz, etc.)\n"+
+				"    - Set deleteOriginalAfterCompress=true to remove source after archiving\n"+
+				"  extract: Extract from archive and edit in place\n"+
+				"    - Use extractFromArchive parameter (e.g., 'archive.zip/entry/path')\n\n"+
+				"Batch mode:\n"+
+				"- Provide 'edits' array for batch operations (multiple files at once)\n"+
+				"- Each edit has: path, action, oldText, newText, count, compressToArchive, etc.",
+		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute or relative path of the target. For archives use 'archive.zip/path/entry' format.")),
 		mcp.WithString("action", mcp.DefaultString("edit"), mcp.Description("Action: edit, delete, compress, extract")),
 		mcp.WithString("oldText", mcp.Description("For action=edit: text to find and replace (hex-encoded when format=hex)")),
@@ -121,44 +196,120 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 		mcp.WithBoolean("recursive", mcp.DefaultBool(false), mcp.Description("For action=delete on directories: if true, delete all contents recursively")),
 		mcp.WithBoolean("ignoreMissing", mcp.DefaultBool(true), mcp.Description("For action=delete: return success instead of error when item doesn't exist")),
 		mcp.WithString("format", mcp.DefaultString("text"), mcp.Description("Input format for edit action: text (string matching, default) or hex (binary byte pattern replacement)")),
+		mcp.WithArray("edits", mcp.Description("Batch mode: array of edit operations. Each has {path, action?, oldText?, newText?, count?, compressToArchive?, extractFromArchive?}"),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":               map[string]any{"type": "string", "description": "Target path"},
+					"action":             map[string]any{"type": "string", "description": "Action: edit, delete, compress, extract"},
+					"oldText":            map[string]any{"type": "string", "description": "Find text for edit action"},
+					"newText":            map[string]any{"type": "string", "description": "Replacement text for edit action"},
+					"count":              map[string]any{"type": "integer", "description": "Occurrence count for edit action"},
+					"compressToArchive":  map[string]any{"type": "string", "description": "Archive destination for compress action"},
+					"extractFromArchive": map[string]any{"type": "string", "description": "Source archive for extract action"},
+				},
+				"required": []string{"path"},
+			}),
+		),
 	)
 
 	mcpServer.AddTool(editItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for batch mode first
+		if result, ok := handleBatchEdit(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleEditItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== CopyItem (CopyFile + directory support) ====================
 	copyItemTool := mcp.NewTool("CopyItem",
-		mcp.WithDescription("Copy a file or directory from source to destination. Directories are copied recursively.\n\n"+
-			"Requires an active project context (call OpenProject first).\n"+
-			"All changes are auto-committed to git."),
+		mcp.WithDescription(
+			"Copy a file or directory from source to destination. Directories are copied recursively.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- All changes are auto-committed to git\n"+
+				"- Set overwrite=true to replace existing destination\n\n"+
+				"Batch mode:\n"+
+				"- Provide 'copies' array for batch copy operations\n"+
+				"- Each copy has: source, destination, overwrite",
+		),
 		mcp.WithString("source", mcp.Required(), mcp.Description("Source file or directory path (absolute or relative)")),
 		mcp.WithString("destination", mcp.Required(), mcp.Description("Destination file or directory path (absolute or relative)")),
 		mcp.WithBoolean("overwrite", mcp.DefaultBool(false), mcp.Description("If true, overwrite existing destination")),
+		mcp.WithArray("copies", mcp.Description("Batch mode: array of copy operations. Each has {source, destination, overwrite?}"),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"source":      map[string]any{"type": "string", "description": "Source path"},
+					"destination": map[string]any{"type": "string", "description": "Destination path"},
+					"overwrite":   map[string]any{"type": "boolean", "description": "Overwrite existing destination"},
+				},
+				"required": []string{"source", "destination"},
+			}),
+		),
 	)
 
 	mcpServer.AddTool(copyItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for batch mode first
+		if result, ok := handleBatchCopy(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleCopyItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== MoveItem (MoveFile + directory support) ====================
 	moveItemTool := mcp.NewTool("MoveItem",
-		mcp.WithDescription("Move or rename a file or directory. Directories are moved with all contents.\n\n"+
-			"Requires an active project context (call OpenProject first).\n"+
-			"All changes are auto-committed to git."),
+		mcp.WithDescription(
+			"Move or rename a file or directory. Directories are moved with all contents.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- All changes are auto-committed to git\n"+
+				"- Set overwrite=true to replace existing destination\n\n"+
+				"Batch mode:\n"+
+				"- Provide 'moves' array for batch move operations\n"+
+				"- Each move has: source, destination, overwrite",
+		),
 		mcp.WithString("source", mcp.Required(), mcp.Description("Source file or directory path (absolute or relative)")),
 		mcp.WithString("destination", mcp.Required(), mcp.Description("Destination file or directory path (absolute or relative)")),
 		mcp.WithBoolean("overwrite", mcp.DefaultBool(false), mcp.Description("If true, overwrite existing destination")),
+		mcp.WithArray("moves", mcp.Description("Batch mode: array of move operations. Each has {source, destination, overwrite?}"),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"source":      map[string]any{"type": "string", "description": "Source path"},
+					"destination": map[string]any{"type": "string", "description": "Destination path"},
+					"overwrite":   map[string]any{"type": "boolean", "description": "Overwrite existing destination"},
+				},
+				"required": []string{"source", "destination"},
+			}),
+		),
 	)
 
 	mcpServer.AddTool(moveItemTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for batch mode first
+		if result, ok := handleBatchMove(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleMoveItem(ctx, req, store, rootDir)
 	})
 
 	// ==================== Search (with regex/grep support) ====================
 	searchTool := mcp.NewTool("Search",
-		mcp.WithDescription("Search for files and directories by name pattern, regex, or file content (grep).\n\n"+
-			"Requires an active project context (call OpenProject first)."),
+		mcp.WithDescription(
+			"Search for files and directories by name pattern, regex, or file content (grep).\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first to set the active project context\n"+
+				"- mode=name: substring match on filenames (default)\n"+
+				"- mode=regex: Go regex pattern applied to filenames\n"+
+				"- mode=grep: search file contents for pattern\n\n"+
+				"Tips:\n"+
+				"- Use extensions='.go,.py' to filter by file type\n"+
+				"- Set fileOnly=true or dirOnly=true to limit result types\n"+
+				"- For grep mode, use contextLines=N to show surrounding lines",
+		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Root directory path to search within")),
 		mcp.WithString("pattern", mcp.Required(), mcp.Description("Pattern to search for (substring match, regex pattern, or grep pattern)")),
 		mcp.WithString("mode", mcp.DefaultString("name"), mcp.Description("Search mode: name (substring), regex (Go regex on filenames), grep (search file contents)")),
@@ -169,10 +320,76 @@ func registerTools(mcpServer *server.MCPServer, store *fileStore, rootDir string
 		mcp.WithBoolean("dirOnly", mcp.DefaultBool(false), mcp.Description("Search only directories (exclude files)")),
 		mcp.WithString("extensions", mcp.Description("Comma-separated list of file extensions to filter by (e.g., '.go,.py')")),
 		mcp.WithNumber("contextLines", mcp.DefaultNumber(0), mcp.Description("For grep mode: number of context lines around matches")),
+		mcp.WithArray("paths", mcp.Description("Multi-root search: array of root directories to search within. Each result includes a 'root' field indicating which root it was found in."),
+			mcp.WithStringItems(),
+		),
 	)
 
 	mcpServer.AddTool(searchTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Check for multi-root search first
+		if result, ok := handleMultiSearch(req, rootDir); ok {
+			return result, nil
+		}
+
 		return handleSearch(ctx, req, store, rootDir)
+	})
+
+	// ==================== Git Tool ====================
+	gitTool := mcp.NewTool("Git",
+		mcp.WithDescription(
+			"Execute git commands within a project directory. Supports status, log, diff, add, commit, push, pull, branch, stash, reset, and more.\n\n"+
+				"How to use:\n"+
+				"- Call OpenProject first (uses open project path by default)\n"+
+				"- Or provide a specific 'path' parameter for git repos outside the open project\n\n"+
+				"Actions:\n"+
+				"  status: Working tree status (default)\n"+
+				"    - Returns branch info, staged/unstaged changes, untracked files\n"+
+				"  log: Commit history\n"+
+				"    - Use maxCount=N to limit results (default 20)\n"+
+				"    - Use format=json|short|fuller|oneline for output format\n"+
+				"  diff: Unstaged or staged changes\n"+
+				"    - Use staged=true to show staged changes instead of unstaged\n"+
+				"    - Use path='file.go' to limit diff to specific file\n"+
+				"  add: Stage files for commit\n"+
+				"    - Provide 'files' array with paths to stage\n"+
+				"  commit: Create a commit\n"+
+				"    - Required: message parameter\n"+
+				"    - Optional: amend=true to modify last commit\n"+
+				"  push: Push to remote\n"+
+				"    - Remote defaults to 'origin'\n"+
+				"    - Use force=true for force push\n"+
+				"  pull: Pull from remote (defaults to origin)\n"+
+				"  branch: List/create/switch branches\n"+
+				"    - action=list (default), create, delete, switch\n"+
+				"    - name parameter required for create/delete/switch\n"+
+				"  stash: Stash/unstash changes\n"+
+				"    - action=save (default), pop, list, apply\n"+
+				"    - message parameter for save action\n"+
+				"  reset: Reset working tree\n"+
+				"    - mode=soft|mixed (default)|hard\n"+
+				"    - commit parameter to specify target commit\n"+
+				"  clean: Remove untracked files\n"+
+				"    - dryRun=true shows what would be deleted\n"+
+				"    - directories=true also removes untracked directories\n"+
+				"  tag: List/create tags\n"+
+				"    - action=list (default), create, delete\n"+
+				"  remote: Manage remotes\n"+
+				"    - action=list (default), add, remove, set-url\n"+
+				"  checkout: Switch branches or restore files\n"+
+				"    - Required: target parameter (branch name or file path)\n"+
+				"    - create=true to create new branch\n"+
+				"  revert: Revert a commit\n"+
+				"    - Required: commit parameter (commit hash)",
+		),
+		mcp.WithString("action", mcp.Required(), mcp.Description("Git action: status, log, diff, add, commit, push, pull, branch, stash, reset, clean, tag, remote, checkout, revert")),
+		mcp.WithString("path", mcp.Description("Project directory (defaults to open project)")),
+		mcp.WithArray("args", mcp.Description("Additional raw git arguments passed directly"),
+			mcp.WithStringItems(),
+		),
+	)
+
+	mcpServer.AddTool(gitTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return handleGitTool(ctx, req, store, rootDir)
 	})
 }
 

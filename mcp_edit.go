@@ -71,6 +71,9 @@ func handleEditFile(pathStr, oldText string, hasOldText bool, newText string, ha
 	}
 
 	// Text mode (original behavior)
+	if oldText == "" {
+		return mcp.NewToolResultError("oldText cannot be empty for text edit"), nil
+	}
 	matchCount := strings.Count(string(contentBytes), oldText)
 	if matchCount == 0 {
 		return mcp.NewToolResultText(fmt.Sprintf("No occurrences of '%s' found in %s", truncate(oldText, 50), filepath.Base(resolvedPath))), nil
