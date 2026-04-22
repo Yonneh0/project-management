@@ -14,7 +14,7 @@ import (
 
 // ==================== GetItem Tool Handler ====================
 
-func handleGetItem(ctx context.Context, req mcp.CallToolRequest, store *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleGetItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ string) (*mcp.CallToolResult, error) {
 	filePath, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -150,7 +150,7 @@ func handleGetItem(ctx context.Context, req mcp.CallToolRequest, store *fileStor
 	case "info":
 		if isArchive && archInfo != nil {
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("=== Archive Information ===\n"))
+			sb.WriteString("=== Archive Information ===\n")
 			sb.WriteString(fmt.Sprintf("Path: %s\n", actualPath))
 			sb.WriteString(fmt.Sprintf("Format: %s | Entries: %d\n", archInfo.Format, len(archInfo.Entries)))
 			return mcp.NewToolResultText(sb.String()), nil
@@ -262,7 +262,7 @@ func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.Call
 	return mcp.NewToolResultText(sb.String()), nil
 }
 
-func getItemReadAction(filePath string, info os.FileInfo, offset int, length int, lineNum int, hasLine bool, startLine int, endLine int, hasStartLine, hasEndLine bool, format string) (*mcp.CallToolResult, error) {
+func getItemReadAction(filePath string, info os.FileInfo, offset int, length int, lineNum int, hasLine bool, startLine int, endLine int, hasStartLine, _ bool, format string) (*mcp.CallToolResult, error) {
 	totalSize := info.Size()
 	mimeType := detectMIMEType(filePath)
 	modTime := info.ModTime().UTC().Format(time.RFC3339)

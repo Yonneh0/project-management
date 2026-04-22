@@ -13,7 +13,7 @@ import (
 
 // ==================== CopyItem Tool Handler ====================
 
-func handleCopyItem(ctx context.Context, req mcp.CallToolRequest, store *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleCopyItem(_ context.Context, req mcp.CallToolRequest, store *fileStore, _ string) (*mcp.CallToolResult, error) {
 	sourcePath, err := extractArg[string](req, "source")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil

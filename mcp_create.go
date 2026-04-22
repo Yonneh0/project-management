@@ -11,7 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-func handleCreateItem(ctx context.Context, req mcp.CallToolRequest, store *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleCreateItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, rootDir string) (*mcp.CallToolResult, error) {
 	pathStr, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("missing required argument 'path': %v", err)), nil

@@ -87,7 +87,7 @@ func detectGoProject(dir string) string {
 	return goModPath
 }
 
-func checkNodeStatus(sb *strings.Builder, projectPath string, pkgPath string) {
+func checkNodeStatus(sb *strings.Builder, _ string, pkgPath string) {
 	sb.WriteString(fmt.Sprintf("Package file: %s\n", pkgPath))
 
 	nodeCmd := exec.Command("node", "--version")
@@ -143,7 +143,7 @@ func checkNodeStatus(sb *strings.Builder, projectPath string, pkgPath string) {
 	sb.WriteString("\n")
 }
 
-func checkPythonStatus(sb *strings.Builder, projectPath string, pyFiles []string) {
+func checkPythonStatus(sb *strings.Builder, _ string, pyFiles []string) {
 	sb.WriteString(fmt.Sprintf("Project files found: %d\n", len(pyFiles)))
 	for _, f := range pyFiles[:minInt(len(pyFiles), 5)] {
 		sb.WriteString(fmt.Sprintf("  - %s\n", f))
@@ -230,7 +230,7 @@ func checkPythonStatus(sb *strings.Builder, projectPath string, pyFiles []string
 	sb.WriteString("\n")
 }
 
-func checkDotnetStatus(sb *strings.Builder, projectPath string, dotnetFile string) {
+func checkDotnetStatus(sb *strings.Builder, _ string, dotnetFile string) {
 	sb.WriteString(fmt.Sprintf("Project file: %s\n", dotnetFile))
 
 	dotnetCmd := exec.Command("dotnet", "--version")

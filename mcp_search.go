@@ -13,7 +13,7 @@ import (
 
 // ==================== Search Tool Handler ====================
 
-func handleSearch(ctx context.Context, req mcp.CallToolRequest, store *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleSearch(_ context.Context, req mcp.CallToolRequest, _ *fileStore, _ string) (*mcp.CallToolResult, error) {
 	searchPath, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -92,132 +92,134 @@ func handleSearch(ctx context.Context, req mcp.CallToolRequest, store *fileStore
 		return mcp.NewToolResultError(fmt.Sprintf("Search path is a file: %s", searchPath)), nil
 	}
 
-	if mode == "grep" {
+	switch mode {
+	case "grep":
 		return searchGrepMode(searchPath, pattern, limit, includeHidden, fileOnly, dirOnly, extensions, contextLines, pctx.Path)
-	} else if mode == "regex" {
+	case "regex":
 		return searchRegexMode(searchPath, pattern, limit, includeHidden, fileOnly, dirOnly, extensions, pctx.Path)
-	}
-
-	type searchResult struct {
-		path     string
-		isDir    bool
-		info     os.FileInfo
-		mimeType string
-	}
-
-	var results []searchResult
-	projectBase := pctx.Path
-	err = filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	default:
+		// "name" mode (default): search by filename matching
+		type nameSearchResult struct {
+			path     string
+			isDir    bool
+			info     os.FileInfo
+			mimeType string
 		}
 
-		name := d.Name()
-		if !includeHidden && strings.HasPrefix(name, ".") {
-			return nil
-		}
-
-		match := strings.Contains(name, pattern) || strings.ToLower(name) == strings.ToLower(pattern)
-		if !match {
-			return nil
-		}
-
-		if fileOnly && d.IsDir() {
-			return nil
-		}
-		if dirOnly && !d.IsDir() {
-			return nil
-		}
-
-		if len(extensions) > 0 && !d.IsDir() {
-			ext := filepath.Ext(name)
-			found := false
-			for _, e := range extensions {
-				if ext == e {
-					found = true
-					break
-				}
+		var results []nameSearchResult
+		projectBase := pctx.Path
+		err = filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			if !found {
+
+			name := d.Name()
+			if !includeHidden && strings.HasPrefix(name, ".") {
 				return nil
 			}
-		}
 
-		var fileInfo os.FileInfo
-		mimeType := "unknown"
-		if !d.IsDir() {
-			fileInfo, _ = d.Info()
-			if fileInfo != nil {
-				mimeType = detectMIMEType(path)
+			match := strings.Contains(name, pattern) || strings.EqualFold(name, pattern)
+			if !match {
+				return nil
 			}
-		}
 
-		// Boundary check for nested paths
-		if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(projectBase)+string(os.PathSeparator)) && filepath.Clean(path) != filepath.Clean(projectBase) {
+			if fileOnly && d.IsDir() {
+				return nil
+			}
+			if dirOnly && !d.IsDir() {
+				return nil
+			}
+
+			if len(extensions) > 0 && !d.IsDir() {
+				ext := filepath.Ext(name)
+				found := false
+				for _, e := range extensions {
+					if ext == e {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return nil
+				}
+			}
+
+			var fileInfo os.FileInfo
+			mimeType := "unknown"
+			if !d.IsDir() {
+				fileInfo, _ = d.Info()
+				if fileInfo != nil {
+					mimeType = detectMIMEType(path)
+				}
+			}
+
+			// Boundary check for nested paths
+			if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(projectBase)+string(os.PathSeparator)) && filepath.Clean(path) != filepath.Clean(projectBase) {
+				return nil
+			}
+
+			results = append(results, nameSearchResult{
+				path:     path,
+				isDir:    d.IsDir(),
+				info:     fileInfo,
+				mimeType: mimeType,
+			})
 			return nil
-		}
-
-		results = append(results, searchResult{
-			path:     path,
-			isDir:    d.IsDir(),
-			info:     fileInfo,
-			mimeType: mimeType,
 		})
-		return nil
-	})
 
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
-	}
-
-	fileCount := 0
-	dirCount := 0
-	for _, r := range results {
-		if r.isDir {
-			dirCount++
-		} else {
-			fileCount++
-		}
-	}
-
-	var sb strings.Builder
-	sb.WriteString("=== Search Results ===\n")
-	sb.WriteString(fmt.Sprintf("Root path: %s\n", searchPath))
-	sb.WriteString(fmt.Sprintf("Pattern: '%s'\n", pattern))
-	sb.WriteString(fmt.Sprintf("Mode: %s | Limit: %d | Max matches/file: %d | Context lines: %d\n", mode, limit, maxMatchesPerFile, contextLines))
-	sb.WriteString(fmt.Sprintf("Total matches found: %d\n", len(results)))
-	sb.WriteString(fmt.Sprintf("Breakdown: %d files, %d directories\n", fileCount, dirCount))
-
-	if len(results) == 0 {
-		sb.WriteString("\nNo matches found.\n")
-	} else {
-		displayResults := results
-		shown := len(results)
-		if len(results) > limit {
-			displayResults = results[:limit]
-			shown = limit
-			sb.WriteString(fmt.Sprintf("Showing first %d of %d results (limit: %d)\n\n", shown, len(results), limit))
-		} else {
-			sb.WriteString(fmt.Sprintf("\nAll %d results shown:\n\n", shown))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
 
-		for _, r := range displayResults {
-			typeStr := "F"
-			sizeStr := ""
+		fileCount := 0
+		dirCount := 0
+		for _, r := range results {
 			if r.isDir {
-				typeStr = "D"
-			} else if r.info != nil {
-				sizeStr = fmt.Sprintf(" | Size: %s", humanReadableSize(r.info.Size()))
+				dirCount++
+			} else {
+				fileCount++
 			}
-			mimeStr := ""
-			if !r.isDir && r.mimeType != "unknown" {
-				mimeStr = fmt.Sprintf(" | MIME: %s", r.mimeType)
-			}
-			sb.WriteString(fmt.Sprintf("[%s] %s%s%s\n", typeStr, r.path, sizeStr, mimeStr))
 		}
-	}
 
-	return mcp.NewToolResultText(sb.String()), nil
+		var sb strings.Builder
+		sb.WriteString("=== Search Results ===\n")
+		sb.WriteString(fmt.Sprintf("Root path: %s\n", searchPath))
+		sb.WriteString(fmt.Sprintf("Pattern: '%s'\n", pattern))
+		sb.WriteString(fmt.Sprintf("Mode: %s | Limit: %d | Max matches/file: %d | Context lines: %d\n", mode, limit, maxMatchesPerFile, contextLines))
+		sb.WriteString(fmt.Sprintf("Total matches found: %d\n", len(results)))
+		sb.WriteString(fmt.Sprintf("Breakdown: %d files, %d directories\n", fileCount, dirCount))
+
+		if len(results) == 0 {
+			sb.WriteString("\nNo matches found.\n")
+		} else {
+			displayResults := results
+			shown := len(results)
+			if len(results) > limit {
+				displayResults = results[:limit]
+				shown = limit
+				sb.WriteString(fmt.Sprintf("Showing first %d of %d results (limit: %d)\n\n", shown, len(results), limit))
+			} else {
+				sb.WriteString(fmt.Sprintf("\nAll %d results shown:\n\n", shown))
+			}
+
+			for _, r := range displayResults {
+				typeStr := "F"
+				sizeStr := ""
+				if r.isDir {
+					typeStr = "D"
+				} else if r.info != nil {
+					sizeStr = fmt.Sprintf(" | Size: %s", humanReadableSize(r.info.Size()))
+				}
+				mimeStr := ""
+				if !r.isDir && r.mimeType != "unknown" {
+					mimeStr = fmt.Sprintf(" | MIME: %s", r.mimeType)
+				}
+				sb.WriteString(fmt.Sprintf("[%s] %s%s%s\n", typeStr, r.path, sizeStr, mimeStr))
+			}
+		}
+
+		return mcp.NewToolResultText(sb.String()), nil
+	}
 }
 
 // ==================== Search Mode Helpers ====================

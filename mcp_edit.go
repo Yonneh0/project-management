@@ -10,7 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-func handleEditItem(ctx context.Context, req mcp.CallToolRequest, store *fileStore, rootDir string) (*mcp.CallToolResult, error) {
+func handleEditItem(_ context.Context, req mcp.CallToolRequest, _ *fileStore, rootDir string) (*mcp.CallToolResult, error) {
 	pathStr, err := extractArg[string](req, "path")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("missing required argument 'path': %v", err)), nil
@@ -166,7 +166,7 @@ func handleEditHex(filePath string, oldText string, hasOldText bool, newText str
 
 		// Show a preview of the hex dump around first match if oldText was provided
 		if hasOldText && len(positions) > 0 {
-			resultMsg += fmt.Sprintf("\nHex dump (first 64 bytes):\n")
+			resultMsg += "\nHex dump (first 64 bytes):\n"
 			end := 64
 			if end > len(newContent) {
 				end = len(newContent)

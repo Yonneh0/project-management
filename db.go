@@ -48,7 +48,7 @@ type fileStore struct {
 	cacheInvalidator CompileCacheInvalidator
 }
 
-func initDatabase(path string, cache *compileCache) (*fileStore, error) {
+func initDatabase(path string, _ *compileCache) (*fileStore, error) {
 	// Set the global dbFilePath so scanDirectory and the watcher can exclude it
 	dbFilePath = path
 
