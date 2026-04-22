@@ -2,15 +2,12 @@ package pkg
 
 import (
 	"crypto/md5"
-	"database/sql"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // SearchResult holds the result of a file search operation.
@@ -35,25 +32,6 @@ type FileInfo struct {
 	IsDir   bool   `json:"is_dir"`
 }
 
-const (
-	schemaSQL = `
-		CREATE TABLE IF NOT EXISTS files (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			path TEXT UNIQUE NOT NULL,
-			name TEXT NOT NULL,
-			size INTEGER NOT NULL,
-			mod_time TEXT NOT NULL,
-			md5_hash TEXT NOT NULL,
-			is_dir BOOLEAN NOT NULL DEFAULT 0
-		);
-		CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
-		CREATE INDEX IF NOT EXISTS idx_files_md5 ON files(md5_hash);
-	`
-)
-
-// CompileCacheInvalidator provides a hook for invalidating the compile cache on file changes.
-type CompileCacheInvalidator func(path string)
-
 // DirExists checks if a directory exists at the given path.
 func DirExists(path string) bool {
 	info, err := os.Stat(path)
@@ -63,27 +41,29 @@ func DirExists(path string) bool {
 	return info.IsDir()
 }
 
+// CompileCacheInvalidator provides a hook for invalidating the compile cache on file changes.
+type CompileCacheInvalidator func(path string)
+
 // FileStore is the main storage interface for indexed files.
 type FileStore struct {
-	db               *sql.DB
+	store            *storageFileStore
 	CompileCache     *compileCache
 	cacheInvalidator CompileCacheInvalidator
 }
 
-// InitDatabase initializes the file store and database at the given path.
+var dbFilePath string
+
+// InitDatabase initializes the file store with in-memory storage and optional JSON persistence.
 func InitDatabase(path string, cache *compileCache) (*FileStore, error) {
 	dbFilePath = path
 
-	conn, err := sql.Open("sqlite", path)
+	store := &FileStore{}
+	var err error
+	store.store, err = NewStorageFileStore(path)
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, fmt.Errorf("open storage: %w", err)
 	}
 
-	if _, err := conn.Exec(schemaSQL); err != nil {
-		return nil, fmt.Errorf("create schema: %w", err)
-	}
-
-	store := &FileStore{db: conn}
 	if err := store.scanDirectory(path); err != nil {
 		return nil, fmt.Errorf("initial scan failed: %w", err)
 	}
@@ -110,8 +90,6 @@ func (s *FileStore) InvalidateCompileCache(path string) {
 		s.cacheInvalidator(path)
 	}
 }
-
-var dbFilePath string
 
 func (s *FileStore) scanDirectory(root string) error {
 	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -162,111 +140,69 @@ func computeMD5(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// UpsertFile updates or inserts a file record into the database.
+// UpsertFile updates or inserts a file record into the store.
 func (s *FileStore) UpsertFile(path string, isDir bool, size int64, modTime string, md5Hash string) error {
 	return s.upsertFile(path, isDir, size, modTime, md5Hash)
 }
 
 func (s *FileStore) upsertFile(path string, isDir bool, size int64, modTime string, md5Hash string) error {
-	name := filepath.Base(path)
-	query := `INSERT INTO files (path, name, size, mod_time, md5_hash, is_dir) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET name=excluded.name, size=excluded.size, mod_time=excluded.mod_time, md5_hash=excluded.md5_hash, is_dir=excluded.is_dir`
-
-	_, err := s.db.Exec(query, path, name, size, modTime, md5Hash, isDir)
-	return err
+	if err := s.store.UpsertFile(path, isDir, size, modTime, md5Hash); err != nil {
+		return err
+	}
+	s.store.scheduleSave()
+	return s.updateParentDirStats(path)
 }
 
-// DeleteFile deletes a file record from the database.
+// DeleteFile deletes a file record from the store.
 func (s *FileStore) DeleteFile(path string) error {
 	return s.deleteFile(path)
 }
 
 func (s *FileStore) deleteFile(path string) error {
-	_, err := s.db.Exec("DELETE FROM files WHERE path = ?", path)
-	return err
+	if err := s.store.DeleteFile(path); err != nil {
+		return err
+	}
+	s.store.scheduleSave()
+	return nil
 }
 
 // SearchFiles searches for files by pattern.
 func (s *FileStore) SearchFiles(pattern string, limit int) (*SearchResult, error) {
-	if limit <= 0 {
-		limit = 1
-	}
-	query := "SELECT path, name, size, mod_time, md5_hash, is_dir FROM files WHERE path LIKE ? LIMIT ?"
-	rows, err := s.db.Query(query, "%"+pattern+"%", limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []FileInfo
-	for rows.Next() {
-		var f FileInfo
-		if err := rows.Scan(&f.Path, &f.Name, &f.Size, &f.ModTime, &f.MD5, &f.IsDir); err != nil {
-			return nil, err
-		}
-		results = append(results, f)
-	}
-
-	var total int
-	s.db.QueryRow("SELECT COUNT(*) FROM files WHERE path LIKE ?", "%"+pattern+"%").Scan(&total)
-
-	return &SearchResult{Files: results, Count: total}, nil
+	return s.store.SearchFiles(pattern, limit)
 }
 
 // FindDuplicates finds duplicate files by MD5 hash.
 func (s *FileStore) FindDuplicates() ([]DuplicateGroup, error) {
-	query := `SELECT md5_hash, path, name, size, mod_time FROM files WHERE is_dir = 0 GROUP BY md5_hash HAVING COUNT(*) > 1`
-	rows, err := s.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	groupsMap := make(map[string]*DuplicateGroup)
-	for rows.Next() {
-		var md5Hash, path, name, modTime string
-		var size int64
-		if err := rows.Scan(&md5Hash, &path, &name, &modTime, &size); err != nil {
-			return nil, err
-		}
-
-		group, exists := groupsMap[md5Hash]
-		if !exists {
-			group = &DuplicateGroup{MD5: md5Hash}
-			groupsMap[md5Hash] = group
-		}
-		group.Files = append(group.Files, FileInfo{Path: path, Name: name, Size: size, ModTime: modTime})
-	}
-
-	var result []DuplicateGroup
-	for _, g := range groupsMap {
-		result = append(result, *g)
-	}
-	return result, nil
+	return s.store.FindDuplicates()
 }
 
 func (s *FileStore) updateParentDirStats(path string) error {
-	var size int64
-	var name string
 	var modTime string
 	var md5Hash string
 	var isDir bool
-	err := s.db.QueryRow("SELECT size, name, mod_time, md5_hash, is_dir FROM files WHERE path = ?", path).Scan(&size, &name, &modTime, &md5Hash, &isDir)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve current stats for %s: %w", path, err)
+
+	// Check if path exists in store.
+	rec, ok := s.store.records[path]
+	if !ok {
+		return nil // directory may not be indexed yet
 	}
+
+	modTime = rec.ModTime
+	md5Hash = rec.MD5Hash
+	isDir = rec.IsDir
 
 	var totalSize int64 = 0
 	var fileCount int = 0
 
-	err = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		if !d.IsDir() {
-			info, err := d.Info()
-			if err != nil {
-				return err
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
 			}
 			totalSize += info.Size()
 			fileCount++

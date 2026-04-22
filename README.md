@@ -1,6 +1,6 @@
 # MCP Project File Management
 
-A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that indexes, searches, and manages files using a local SQLite database. It provides tools for AI assistants to interact with your file system via stdio transport.
+A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that indexes, searches, and manages files using an in-memory store with JSON persistence. It provides tools for AI assistants to interact with your file system via stdio transport.
 
 ## Features
 
@@ -14,15 +14,12 @@ A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serv
 - **Compile Status** — Check build status for Node.js, Python, .NET, and Go projects with caching (60s TTL)
 - **Archive Support** — Read/write ZIP, TAR, TAR.GZ archives; compress files/folders; extract entries to filesystem
 - **Auto-Monitoring** — File watcher automatically indexes new/modified files in real-time (ignores its own database file)
-- **Local SQLite Storage** — All index data stored in a lightweight, portable database with MD5 hashing
+- **In-Memory Storage** — All index data stored in thread-safe memory with debounced JSON persistence and MD5 hashing
 
 ## Prerequisites
 
 - [Go 1.21+](https://go.dev/dl/) installed on your system
-- A C compiler (required by the `modernc.org/sqlite` pure-Go SQLite library)
-  - **Windows**: Download [MinGW-w64](https://www.mingw-w64.org/) or use [TDM-GCC](https://tdm-gcc.tdmlab.com/) _(not needed with `CGO_ENABLED=0` build)_
-  - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
-  - **Linux**: `build-essential` package (`sudo apt install build-essential`)
+- No C compiler required (pure Go, no CGO needed)
 
 ## Installation
 
@@ -42,7 +39,7 @@ $env:CGO_ENABLED="0"; go build -ldflags="-s -w" -o project-management.exe
 set CGO_ENABLED=0 && go build -ldflags="-s -w" -o project-management.exe
 ```
 
-The `-ldflags="-s -w"` flags strip symbol tables and debug information, producing a smaller binary. `CGO_ENABLED=0` enables static linking so no external C compiler is needed (the `modernc.org/sqlite` library is pure Go).
+The `-ldflags="-s -w"` flags strip symbol tables and debug information, producing a smaller binary. `CGO_ENABLED=0` enables static linking — no external dependencies required.
 
 The compiled binary `project-management.exe` will be created in the current directory.
 
@@ -71,7 +68,7 @@ The server runs in **stdio mode** by default, communicating via standard input/o
 | `target_directory` (optional) | Root directory to monitor and index files | `C:\Projects\AI` |
 
 The server will:
-1. Initialize a SQLite database at `<target_directory>/.mcp_file_index.db`
+1. Initialize an in-memory store with JSON persistence at `<target_directory>/.mcp_file_index.db`
 2. Start monitoring the target directory for file changes
 3. Begin accepting MCP tool calls via stdin/stdout
 
@@ -391,7 +388,8 @@ project-management/
 │   └── newproject.go          # OpenProject/CloseProject project lifecycle with git initialization
 ├── pkg/
 │   ├── shared_types.go        # Shared types (dirEntryInfo, CompileResult, compileCache, ArchiveInfo)
-│   ├── db.go                  # SQLite database operations (index, search, duplicates, MD5 hashing)
+│   ├── storage.go             # In-memory file store with JSON persistence (thread-safe, debounced saves)
+│   ├── db.go                  # FileStore interface (index, search, duplicates, MD5 hashing)
 │   └── watcher.go             # File system watcher for auto-indexing (ignores .mcp_file_index.db)
 └── tools/
     ├── register.go            # MCP tool registration and path resolution helpers
@@ -411,7 +409,7 @@ project-management/
 ## Architecture
 
 - **MCP Server**: Uses [`github.com/mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go) library for MCP protocol compliance
-- **Database**: [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) — pure Go SQLite implementation (no CGO required, `CGO_ENABLED=0` builds supported)
+- **Storage**: In-memory map-based store with thread-safe access (`sync.RWMutex`) and debounced JSON persistence (5s interval)
 - **File Watching**: `github.com/fsnotify/fsnotify` for cross-platform file system event monitoring
 - **Compile Cache**: In-memory cache with configurable TTL (60 seconds default), auto-invalidated on file changes via watcher hooks
 - **Archive Cache**: In-memory cache for open archives (ZIP, TAR, TAR.GZ) with lazy loading
@@ -460,24 +458,39 @@ When reading/writing archives, entry names are sanitized to prevent sandbox esca
 
 ## Data Model
 
-The SQLite database stores indexed files with the following schema:
+Indexed files are stored in memory as records with the following fields:
 
-```sql
-CREATE TABLE IF NOT EXISTS files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    mod_time TEXT NOT NULL,
-    md5_hash TEXT NOT NULL,
-    is_dir BOOLEAN NOT NULL DEFAULT 0
-);
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute file path (unique key) |
+| `name` | string | File/directory basename |
+| `size` | int64 | File size in bytes (0 for directories) |
+| `mod_time` | string | Modification time in RFC3339 format |
+| `md5_hash` | string | MD5 hash of file contents (empty for directories) |
+| `is_dir` | bool | Whether the entry is a directory |
 
 - Each file is indexed with its MD5 hash for duplicate detection
 - Directories are tracked with size 0 and empty MD5 (sizes calculated on-demand)
 - Index updates automatically via file watcher or tool operations
-- Database file (`*.mcp_file_index.db*`) is excluded from its own scan and watching
+- Persistence file (`*.mcp_file_index.db`) stores JSON data, excluded from its own scan and watching
+
+**JSON persistence format:**
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-22T06:30:00Z",
+  "files": [
+    {
+      "path": "/some/path",
+      "name": "file.go",
+      "size": 1234,
+      "mod_time": "2026-04-22T06:00:00Z",
+      "md5_hash": "abc123...",
+      "is_dir": false
+    }
+  ]
+}
+```
 
 ## License
 

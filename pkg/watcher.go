@@ -23,9 +23,7 @@ func NewFileWatcher(root string, dbPath string, upsert fileOp, del deleteOp) (*f
 
 	ignoredPatterns := []string{
 		".mcp_file_index.db",
-		".mcp_file_index.db-journal",
-		".mcp_file_index.db-wal",
-		".mcp_file_index.db-shm",
+		".mcp_file_index.db.tmp",
 	}
 	for _, pattern := range ignoredPatterns {
 		ignoredPaths[pattern] = true
