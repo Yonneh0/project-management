@@ -38,6 +38,7 @@ func isValidProjectName(name string) bool {
 	if strings.Contains(name, "..") {
 		return false
 	}
+
 	for _, component := range strings.Split(name, string(filepath.Separator)) {
 		if component == "" {
 			continue
@@ -49,6 +50,15 @@ func isValidProjectName(name string) bool {
 			}
 		}
 	}
+
+	// Normalize absolute Windows paths to their final component (e.g., "E:\Projects\audit" → "audit").
+	if filepath.IsAbs(name) && len(name) >= 2 && name[1] == ':' {
+		base := filepath.Base(name)
+		if base != "." && isValidProjectName(base) {
+			return true // accept the path as-is; OpenProject will normalize it below.
+		}
+	}
+
 	return true
 }
 

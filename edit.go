@@ -52,12 +52,26 @@ func handleEditItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		return handleCreateFile(pathStr, content, content != "", isFolder, overwrite, ignoreMissing, recursive, rootDir, encoding, showProgress)
 	default:
 		// default to "edit" — handles line-based replacement on existing files.
-		// content parameter is used as fallback when replacement is not provided.
+		// When startLine/endLine are omitted and no content/replacement provided, replace the entire file (not just line 1).
 		useReplacement := replacement
 		if useReplacement == "" && content != "" {
 			useReplacement = content
 		}
-		return handleEditFile(pathStr, startLineArg, endLineArg, useReplacement, rootDir, encoding, showProgress)
+
+		startLineVal := 0
+		endLineVal := 0
+
+		if startLineArg != nil || endLineArg != nil {
+			// Explicit line range provided.
+			startLineVal = extractArgsDefault(req, "startLine", 1)
+			endLineVal = extractArgsDefault(req, "endLine", 0)
+		} else if useReplacement == "" && content == "" {
+			// No explicit line range AND no content — replace entire file.
+			startLineVal = 1
+			endLineVal = -1 // sentinel for "all remaining lines".
+		}
+
+		return handleEditFile(pathStr, &startLineVal, &endLineVal, useReplacement, rootDir, encoding, showProgress)
 	}
 }
 
@@ -127,8 +141,10 @@ func handleEditFile(pathStr string, startLine *int, endLine *int, replacement st
 	}
 
 	var endLineVal int
-	// When endLine is nil, default to replacing a single line (same as startLine).
-	if endLine != nil && *endLine >= startLineVal {
+	// Handle sentinel value: -1 means "replace all lines to end".
+	if endLine != nil && *endLine == -1 {
+		endLineVal = totalLines
+	} else if endLine != nil && *endLine >= startLineVal {
 		endLineVal = *endLine
 	} else if endLine == nil {
 		endLineVal = startLineVal // no explicit endline — replace exactly one line
@@ -190,7 +206,27 @@ func handleEditFile(pathStr string, startLine *int, endLine *int, replacement st
 	// Return appropriate message based on whether substantive changes were made.
 	message := fmt.Sprintf("Replaced line(s) %d-%d in %s%s", startLineVal, endLineVal, filepath.Base(resolvedPath), fileDiff)
 	if linesIdentical {
-		message = fmt.Sprintf("No substantive changes — replacement text matches existing content (line endings normalized) in %s%s", filepath.Base(resolvedPath), fileDiff)
+		// Determine if the replacement is substantive (actually changed content).
+		hasMeaningfulReplacement := false
+
+		// Case 1: non-empty text replacing existing content.
+		if replacement != "" && len(lines[startLineVal-1:endLineVal]) == len(replacementLines) {
+			for _, line := range replacementLines {
+				if strings.TrimSpace(line) != "" {
+					hasMeaningfulReplacement = true
+					break
+				}
+			}
+		}
+
+		// Case 2: empty string replacing existing content (e.g., removing a line).
+		if replacement == "" && len(lines[startLineVal-1:endLineVal]) > 0 {
+			hasMeaningfulReplacement = true
+		}
+
+		if !hasMeaningfulReplacement {
+			message = fmt.Sprintf("No substantive changes — replacement text matches existing content (line endings normalized) in %s%s", filepath.Base(resolvedPath), fileDiff)
+		}
 	}
 
 	return mcp.NewToolResultText(message), nil
