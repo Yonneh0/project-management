@@ -25,12 +25,10 @@ func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.Call
 		symlinkTarget, _ = os.Readlink(filePath)
 	}
 	readable := true
-	// Writable check based on unix permission bits
 	writable := info.Mode().Perm()&0200 != 0
 
 	if !isDir {
 		fileSize = info.Size()
-
 		testFile, testErr := os.Open(filePath)
 		if testErr != nil {
 			readable = false
@@ -56,18 +54,22 @@ func getItemInfoAction(filePath string, info os.FileInfo, isDir bool) (*mcp.Call
 
 // getItemReadAction handles file reading and directory listing.
 func getItemReadAction(filePath string, info os.FileInfo, offset int, length int, lineNum int, hasLine bool, startLine int, endLine int, hasStartLine bool, format string, isDir bool, recursive bool, maxItems int, includeHidden bool, sortBy string) (*mcp.CallToolResult, error) {
-	// Directory listing — ensure empty directories are included in results.
 	if isDir {
+		dirModTime := info.ModTime().UTC().Format(time.RFC3339)
+		dirPerms := formatPermissions(info)
+
+		if length == 0 {
+			msg := fmt.Sprintf("Directory: %s\nSize: %d bytes\nModified: %s | Permissions: %s", filePath, info.Size(), dirModTime, dirPerms)
+			return mcp.NewToolResultText(msg), nil
+		}
 		return getItemListAction(filePath, info, recursive, maxItems, includeHidden, sortBy)
 	}
 
-	// File reading
 	totalSize := info.Size()
 	modTime := info.ModTime().UTC().Format(time.RFC3339)
 	sizeStr := humanReadableSize(totalSize)
 	perms := formatPermissions(info)
 
-	// Check large file threshold
 	var largeFileHint string
 	if totalSize >= LargeFileThreshold {
 		hint := BuildFileHint("read", filePath, totalSize)
@@ -83,7 +85,6 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 			return mcp.NewToolResultError(fmt.Sprintf("failed to read file: %v", err)), nil
 		}
 
-		lines := strings.Split(string(content), "\n")
 		var result strings.Builder
 		result.WriteString(fmt.Sprintf("=== %s ===\n", filePath))
 		result.WriteString(fmt.Sprintf("Size: %s (%d bytes) | Modified: %s | Permissions: %s\n\n", sizeStr, totalSize, modTime, perms))
@@ -91,20 +92,41 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 			result.WriteString(largeFileHint)
 		}
 
+		rawLines := strings.Split(string(content), "\n")
+		hasTrailingNewline := len(content) > 0 && content[len(content)-1] == '\n'
+		totalLines := len(rawLines)
+		if hasTrailingNewline && totalLines > 0 && rawLines[totalLines-1] == "" {
+			totalLines--
+		}
+
 		if hasLine {
 			lineIdx := lineNum - 1
-			if lineIdx < 0 || lineIdx >= len(lines) {
-				return mcp.NewToolResultText(fmt.Sprintf("File: %s\nTotal lines: %d\nLine %d out of range", filePath, len(lines), lineNum)), nil
+			if lineIdx < 0 || lineIdx >= len(rawLines) {
+				return mcp.NewToolResultText(fmt.Sprintf("File: %s\nTotal lines: %d\nLine %d out of range", filePath, totalLines, lineNum)), nil
 			}
-			result.WriteString(fmt.Sprintf("%s\n", lines[lineIdx]))
-		} else if hasStartLine {
+			result.WriteString(fmt.Sprintf("%s\n", rawLines[lineIdx]))
+
+			if len(content) > 0 {
+				var lineCount int
+				if hasTrailingNewline && totalLines > 0 && rawLines[totalLines-1] == "" {
+					lineCount = totalLines - 1
+				} else {
+					lineCount = totalLines
+				}
+				result.WriteString(fmt.Sprintf("\nLines: %d\n", lineCount))
+			}
+
+			return mcp.NewToolResultText(result.String()), nil
+		}
+
+		if hasStartLine {
 			startIdx := startLine - 1
 			endIdx := endLine - 1
 			if startIdx < 0 {
 				startIdx = 0
 			}
-			if endIdx >= len(lines) {
-				endIdx = len(lines) - 1
+			if endIdx >= totalLines {
+				endIdx = totalLines - 1
 			}
 			if startIdx > endIdx {
 				startIdx, endIdx = endIdx, startIdx
@@ -112,12 +134,13 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 			if startLine > endLine {
 				result.WriteString(fmt.Sprintf("Note: startLine (%d) > endLine (%d); swapping to read lines %d-%d\n", startLine, endLine, startLine, endLine))
 			}
-			for i := startIdx; i <= endIdx && i < len(lines); i++ {
-				result.WriteString(fmt.Sprintf("%d | %s\n", i+1, lines[i]))
+			for i := startIdx; i <= endIdx && i < len(rawLines); i++ {
+				result.WriteString(fmt.Sprintf("%d | %s\n", i+1, rawLines[i]))
 			}
-		}
 
-		return mcp.NewToolResultText(result.String()), nil
+			result.WriteString(fmt.Sprintf("\nLines: %d\n", totalLines))
+			return mcp.NewToolResultText(result.String()), nil
+		}
 	}
 
 	if length == 0 {
@@ -172,7 +195,6 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 	if n == 0 && err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read file: %v", err)), nil
 	}
-	// Handle partial read: if we read some data but also got an error, the data is still valid
 	data = data[:n]
 
 	bytesRead := int64(n)
@@ -195,10 +217,21 @@ func getItemReadAction(filePath string, info os.FileInfo, offset int, length int
 	}
 
 	if format == "auto" {
-		content := escapeNonPrintable(string(data))
-		lineCount := strings.Count(content, "\\n") + 1
+		contentStr := escapeNonPrintable(string(data))
+		var lineCount int
+		if len(data) == 0 {
+			lineCount = 0
+		} else {
+			rawLines := strings.Split(contentStr, "\\n")
+			hasTrailingNewline := contentStr[len(contentStr)-1] == '\\' && len(contentStr) > 2
+			totalLines := len(rawLines)
+			if hasTrailingNewline && totalLines > 0 && rawLines[totalLines-1] == "" {
+				totalLines--
+			}
+			lineCount = totalLines
+		}
 		result.WriteString(fmt.Sprintf("Lines: %d\n\n", lineCount))
-		result.WriteString(content)
+		result.WriteString(contentStr)
 		if int64(n) < totalSize {
 			remaining := totalSize - bytesRead
 			result.WriteString(fmt.Sprintf("\n\n... (%s remaining, use offset/length to read more)", humanReadableSize(remaining)))
@@ -231,15 +264,13 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 			}
 
 			info2, _ := d.Info()
-			// Skip hidden dirs entirely, skip hidden files
 			if !includeHidden && strings.HasPrefix(d.Name(), ".") {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
-				return nil // Skip hidden files but continue walking
+				return nil
 			}
 
-			// Check symlink
 			isLink := d.Type()&os.ModeSymlink != 0
 			linkTarget := ""
 			if isLink {
@@ -291,7 +322,7 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 					return !allEntries[i].IsDir
 				}
 				return allEntries[i].Name < allEntries[j].Name
-			default: // name
+			default:
 				return allEntries[i].Name < allEntries[j].Name
 			}
 		})
@@ -328,7 +359,6 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 			if e.Info != nil && !e.IsDir {
 				sizeStr = fmt.Sprintf(" (%s)", humanReadableSize(e.Info.Size()))
 			}
-			// Add symlink indicator
 			symlinkStr := ""
 			if e.IsSymlink {
 				symlinkStr = fmt.Sprintf(" -> %s", e.SymlinkTarget)
@@ -389,7 +419,7 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 					return !entryInfos[i].IsDir
 				}
 				return entryInfos[i].Name < entryInfos[j].Name
-			default: // name
+			default:
 				return entryInfos[i].Name < entryInfos[j].Name
 			}
 		})
@@ -435,8 +465,6 @@ func getItemListAction(filePath string, info os.FileInfo, recursive bool, maxIte
 }
 
 // handleGetItem processes the GetItem tool request.
-// Supported actions: auto (detect), read (file content or directory listing), info (metadata).
-// Requires an open project context — all paths resolved against project root.
 func handleGetItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	filePath, err := extractArg[string](req, "path")
 	if err != nil {
@@ -449,23 +477,14 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 
 	offset := extractArgsDefault(req, "offset", 0)
-
 	length := extractArgsDefault(req, "length", -1)
-
 	lineNum := extractArgsDefault[*int](req, "line", nil)
-
 	startLine := extractArgsDefault[*int](req, "startLine", nil)
-
 	endLine := extractArgsDefault[*int](req, "endLine", nil)
-
 	format := extractArgsDefault(req, "format", "auto")
-
 	recursive := extractArgsDefault(req, "recursive", false)
-
 	maxItems := extractArgsDefault(req, "maxItems", DefaultMaxItems)
-
 	includeHidden := extractArgsDefault(req, "includeHidden", false)
-
 	sortBy := extractArgsDefault(req, "sortBy", "name")
 
 	pctxSnap := GetGlobalProjectSnapshot()
@@ -477,13 +496,34 @@ func handleGetItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("path resolution failed: %v", err)), nil
 	}
-
 	actualPath := resolvedPath
 
 	info, err := os.Stat(actualPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return mcp.NewToolResultText(fmt.Sprintf("Item not found: %s", actualPath)), nil
+			parentDir := filepath.Dir(actualPath)
+			baseName := filepath.Base(actualPath)
+			suggestion := suggestFileExists(actualPath)
+
+			var msg string
+			hasDot := false
+			for _, c := range baseName {
+				if c == '.' {
+					hasDot = true
+					break
+				}
+			}
+			if strings.HasSuffix(actualPath, "/") || !hasDot && len(baseName) > 0 {
+				msg = fmt.Sprintf("Item not found: %s (looking for directory)\nParent: %s", actualPath, parentDir)
+			} else {
+				msg = fmt.Sprintf("Item not found: %s (looking for file)\nParent: %s", actualPath, parentDir)
+			}
+
+			if suggestion != "" {
+				msg += fmt.Sprintf("\nDid you mean: %s?", suggestion)
+			}
+
+			return mcp.NewToolResultText(msg), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("stat failed: %v", err)), nil
 	}

@@ -155,15 +155,16 @@ func toHexDumpWithConfig(data []byte, bytesPerRow int, showAddresses bool) strin
 
 // toCompactHex generates a compact hex dump format with configurable row width and address display.
 // Each line is: [OFFSET:] <hex bytes> (no ASCII column).
-func toCompactHex(data []byte, bytesPerRow int, showAddresses bool) string {
+func toCompactHex(data []byte, bytesPerRow int, showAddresses bool, base uint64) string {
 	if len(data) == 0 {
 		return "(empty file)\n"
 	}
 	var sb strings.Builder
 
 	for i := 0; i < len(data); i += bytesPerRow {
+		addr := base + uint64(i)
 		if showAddresses {
-			sb.WriteString(fmt.Sprintf("%08X: ", i))
+			sb.WriteString(fmt.Sprintf("%08X: ", addr))
 		}
 
 		end := i + bytesPerRow

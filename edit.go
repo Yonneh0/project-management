@@ -23,7 +23,7 @@ func handleEditItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("missing required argument 'path': %v", err)), nil
 	}
 
-	action := extractArgsDefault(req, "action", "create")
+	action := extractArgsDefault(req, "action", "edit")
 
 	startLineArg := extractArgsDefault[*int](req, "startLine", nil)
 	endLineArg := extractArgsDefault[*int](req, "endLine", nil)
@@ -50,10 +50,14 @@ func handleEditItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	switch action {
 	case "create":
 		return handleCreateFile(pathStr, content, content != "", isFolder, overwrite, ignoreMissing, recursive, rootDir, encoding, showProgress)
-	case "edit":
-		return handleEditFile(pathStr, startLineArg, endLineArg, replacement, rootDir, encoding, showProgress)
 	default:
-		return mcp.NewToolResultError(fmt.Sprintf("unknown action: %s (valid: create, edit)", action)), nil
+		// default to "edit" — handles line-based replacement on existing files.
+		// content parameter is used as fallback when replacement is not provided.
+		useReplacement := replacement
+		if useReplacement == "" && content != "" {
+			useReplacement = content
+		}
+		return handleEditFile(pathStr, startLineArg, endLineArg, useReplacement, rootDir, encoding, showProgress)
 	}
 }
 
@@ -271,7 +275,7 @@ func handleCreateFile(pathStr string, content string, hasContent bool, isFolder 
 	if isFolder {
 		// Ensure empty directories are persisted for reliable path resolution.
 		if content == "" && !hasContent {
-			result := fmt.Sprintf("Directory created (empty): %s", filepath.Base(resolvedPath))
+		result := fmt.Sprintf("Directory created (empty): %s", resolvedPath)
 
 			// MkdirAll creates parent dirs AND the target directory itself.
 			if err := os.MkdirAll(resolvedPath, 0755); err != nil {
@@ -282,7 +286,7 @@ func handleCreateFile(pathStr string, content string, hasContent bool, isFolder 
 			return mcp.NewToolResultText(result + metadata), nil
 		}
 
-		result := fmt.Sprintf("Directory created: %s", filepath.Base(resolvedPath))
+		result := fmt.Sprintf("Directory created: %s", resolvedPath)
 		if err := os.MkdirAll(filepath.Dir(resolvedPath), 0755); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to create directory: %v", err)), nil
 		}
@@ -318,7 +322,11 @@ func handleCreateFile(pathStr string, content string, hasContent bool, isFolder 
 	}
 
 	metadata := buildEditMetadataJSON("create_file", resolvedPath, 0, 0, encoding)
-	return mcp.NewToolResultText(fmt.Sprintf("File created: %s%s", filepath.Base(resolvedPath), metadata)), nil
+	msg := "File created"
+	if _, statErr := os.Stat(resolvedPath); statErr == nil {
+		msg = "Overwritten"
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("%s: %s%s", msg, filepath.Base(resolvedPath), metadata)), nil
 }
 
 // encodingToString converts a TextEncoding constant to its string representation.

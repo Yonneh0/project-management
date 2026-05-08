@@ -242,7 +242,7 @@ func handleViewBinary(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 
 	case "compact":
 		result.WriteString(fmt.Sprintf("\n--- Compact Hex (offset %d) ---\n", offset))
-		result.WriteString(toCompactHex(data, bytesPerRow, showAddresses))
+		result.WriteString(toCompactHex(data, bytesPerRow, showAddresses, uint64(offset)))
 		if bytesRead < totalSize {
 			remaining := totalSize - bytesRead
 			result.WriteString(fmt.Sprintf("... (%d bytes remaining, use offset/length to read more)", remaining))
@@ -371,7 +371,7 @@ func handleGetURL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 
 		// Build result without body, include save info
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("=== HTTP Response ===\nURL: %s\nMethod: %s\nStatus: %d %s\n", rawURL, method, resp.StatusCode, resp.Status))
+		sb.WriteString(fmt.Sprintf("=== HTTP Response ===\nURL: %s\nMethod: %s\nStatus: %s\n", rawURL, method, resp.Status))
 		sb.WriteString(fmt.Sprintf("Content-Type: %s\nContent-Length: %d bytes\nTime: %s\n\n", resp.Header.Get("Content-Type"), len(respBody), time.Now().UTC().Format(time.RFC3339)))
 		sb.WriteString(fmt.Sprintf("Saved to: %s\n\n", savePath))
 		return mcp.NewToolResultText(sb.String()), nil
@@ -461,9 +461,9 @@ func handleExecShell(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	case "sh", "bash", "zsh":
 		execCmd = exec.CommandContext(ctx, "sh", "-c", command)
 	case "cmd":
-		// Wrap the command in additional quotes so nested quotes are properly handled by cmd.exe.
-		// This prevents issues with complex commands like: echo "=== Reading test1.txt ===" && type test1.txt
-		execCmd = exec.CommandContext(ctx, "cmd", "/C", "\""+command+"\"")
+		// Execute command directly via cmd /C without extra quoting.
+		// Go's exec handles argument escaping; wrapping in quotes was causing double-quoted args like '"dir /b *.txt"'
+		execCmd = exec.CommandContext(ctx, "cmd", "/C", command)
 
 	default:
 		if runtime.GOOS == "windows" {
