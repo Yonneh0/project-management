@@ -6,13 +6,12 @@ A Go-based [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serv
 
 ## Features
 
-- **stdio Transport** — Standard MCP transport via stdin/stdout for MCP hosts like LM Studio, Claude Desktop, etc.
 - **Project Context System** — Open, close, and list projects (`OpenProject`, `CloseProject`, `ListProjects`). Project state persisted in `project-management.json`; all file paths resolve relative to the open project.
-- **Unified GetItem** — Read file content (text or binary), list directories, get metadata via a single tool with offset/length/line support; auto-detects text/binary format and provides hex dump output for binary files. Supports chunked reading for large files (>5MB threshold). For detailed binary viewing use ViewBinary instead.
-- **Unified EditItem** — Create files/directories and perform line-based text replacement in one tool; for binary editing use ViewBinary.
-- **ViewBinary** — Hex dump viewer for binary files: three formats (hex/compact/raw), configurable row width (8/16/32) and address display, chunked reading via offset/length parameters
-- **Shell Execution** — Execute commands via cmd, PowerShell, Node.js, Python, sh, bash, or zsh; supports streaming output mode for long-running builds and custom environment variables
-- **HTTP Client (GetURL)** — Fetch URLs with configurable HTTP options: method, headers, cookies, referrer, user agent, and body; save response bodies to the open project directory; validates URL scheme to prevent SSRF attacks
+- **GetItem** — Read file content (text or binary), list directory contents, get metadata via a single tool with offset/length/line support; auto-detects text/binary format and provides hex dump output for binary files. Supports chunked reading for large files (>5MB threshold). For detailed binary viewing use ViewBinary instead.
+- **EditItem** — Create files/directories and perform line-based text replacement in one tool. Returns structured JSON metadata. Uses UTF-8 encoding by default with support for multiple encodings (utf-8, utf-8-bom, utf-16le, utf-16be, cp1252, ascii).
+- **ViewBinary** — Hex dump viewer for binary files: three formats (hex/compact/raw), configurable row width (8/16/32) and address display, chunked reading via offset/length parameters. Reads raw bytes as hex — use with GetItem for file content comparison.
+- **Shell Execution** — Execute commands via cmd, PowerShell, Node.js, Python, sh, bash, or zsh; supports streaming output mode for long-running builds and custom environment variables. Default shell varies by OS (cmd on Windows, sh on Unix-like systems).
+- **HTTP Client (GetURL)** — Fetch URLs with configurable HTTP options: method, headers, cookies, referrer, user agent, and body; save response bodies to the open project directory; validates URL scheme to prevent SSRF attacks.
 
 ## Prerequisites
 
@@ -73,26 +72,15 @@ Any MCP host that supports stdio transport can use the server. Example JSON-RPC 
   }
 }
 ```
+
 ---
-
-## Constants Reference
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `MaxFileSize` | 10MB (10,485,760 bytes) | Maximum single-file read size for line-based reads; offset/length reading supports larger files up to 50MB |
-| `LargeFileThreshold` | 5MB (5,242,880 bytes) | Threshold for "large file" hint and chunked read suggestions |
-| `MaxOutputLength` | 10,000 bytes | Default shell output truncation limit |
-| `DefaultShellTimeout` | 30 seconds | Default shell command timeout |
-| `DefaultGetURLTimeout` | 30 seconds | Default HTTP request timeout |
-| `ProgressThreshold` | 1MB (1,048,576 bytes) | Minimum file size for progress indicators (`showProgress=true`) |
-| `DefaultMaxItems` | 100 | Default max directory listing entries |
 
 ## Project Structure
 
 ```
 project-management/
 ├── core.go                    # MCP tool registration, project context, path resolution, thread-safe state
-├── edit.go                    # EditItem handler: create/edit operations, line-based text replacement
+├── edit.go                    # EditItem handler: create/edit operations, line-based text replacement, encoding support
 ├── get.go                     # GetItem handler: read/list/info actions, directory listing, metadata
 ├── go.mod                     # Go module definition (Go 1.26.2)
 ├── go.sum                     # Dependency checksums
@@ -101,7 +89,9 @@ project-management/
 ├── shell.go                   # ExecShell + GetURL handlers: multi-shell command execution, HTTP client, binary viewer (ViewBinary)
 └── utils.go                   # Utilities: hex dump/parse, generic extractArg, text encoding, permissions, system information
 ```
+
 # MCP Tools Reference
+
 1. [ListProjects](#1-listprojects)
 2. [OpenProject](#2-openproject)
 3. [GetItem](#3-getitem)
@@ -127,6 +117,7 @@ project-management/
 
 - Returns a JSON array of project info with name, path, size, and modification time
 - Sorted by most recently modified (descending)
+- Only lists subdirectories within the root directory (the `-target-dir` value)
 - Useful as a first step before calling OpenProject or ViewBinary
 
 ### Example
@@ -147,22 +138,23 @@ ListProjects()
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | **Yes** | — | Project name/path relative to rootDir (required). |
+| `path` | string | **Yes** | — | Project name/path relative to rootDir/target-directory. Must be a valid project name (e.g., 'my-project' or 'subfolder/my-project'). |
 
 ### Behavior
 
 - A valid project name/path must be provided; if blank/empty, an error is returned
 - If `path` exists as a directory: opens it as the current project
-- If `path` does not exist: creates it as a new project
+- If `path` does not exist: creates it as a new project and opens it
 - Automatically closes any previously open project before opening a new one
 - All subsequent tool paths are resolved relative to the opened project root
+- On first open, prints system environment context (environment variables, installed tools, system resources, directory tree)
 
 ### Project Name Requirements
 
 - Must be 1–64 characters
 - Alphanumeric letters, hyphens (`-`), underscores (`_`), and dots (`.`) only
 - Cannot start with `.` or contain `..`
-- Cannot be the root directory itself
+- Cannot be the root directory itself (the `-target-dir`)
 
 ### Examples
 
@@ -183,24 +175,24 @@ OpenProject(path="existing-directory")
 
 **Purpose:** Read file content (text or binary), list directory contents, or get file/directory metadata via a single tool with offset/length/line support. Auto-detects text/binary format and provides hex dump output for binary files; set `format="hex"` to force hex output regardless of auto-detected type. For detailed binary viewing use ViewBinary instead.
 
-**Project Context Required:** Yes
+**Project Context Required:** Yes (unless action=info on the root)
 
 ### Parameters
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `path` | string | **Yes** | — | Path of the file or directory (resolved against project root) |
-| `action` | string | No | `"auto"` | `auto` (detect file/dir), `read` (content or listing) |
+| `action` | string | No | `"auto"` | `auto` (detect file/dir), `read` (content or listing), `info` (metadata only) |
 | `offset` | number | No | `0` | Byte offset for file reading (`0` = start of file). Use with length for chunked reading. |
-| `length` | number | No | `-1` | Read control: `-1` = entire file, `0` = metadata only (no content returned), `>0` = exactly N bytes from offset |
+| `length` | number | No | `-1` | Read control: `-1` = entire file, `0` = metadata only (no content returned), `>0` = exactly N bytes from offset. When reading partial data, output includes "N remaining" indicator. |
 | `line` | number | No | — | 1-based single line number to read (overrides offset/length). **Note:** Line-based reading requires the entire file to fit within MaxFileSize (10MB). For larger files, use offset/length. |
 | `startLine` | number | No | — | For text read: 1-based start of range (inclusive). |
 | `endLine` | number | No | — | For text read: 1-based end of range (inclusive). Required with startLine. |
-| `format` | string | No | `"auto"` | `auto`, `text`, `hex` (hex dump with ASCII preview) |
-| `recursive` | boolean | No | `false` | Walk directory recursively |
-| `maxItems` | number | No | `100` | Maximum directory entries to return. `0` = unlimited. |
-| `includeHidden` | boolean | No | `false` | Include hidden/dot files and directories |
-| `sortBy` | string | No | `"name"` | `name`, `size`, `date`, `type` |
+| `format` | string | No | `"auto"` | Output format for file reading: `auto` (text or hex based on content detection), `text` (force text mode), `hex` (always hex dump) |
+| `recursive` | boolean | No | `false` | Walk directory recursively. Hidden files are skipped when includeHidden=false; hidden directories are skipped entirely. |
+| `maxItems` | number | No | `100` | Maximum directory entries to return. `0` = unlimited (no limit). Applies to both top-level and recursive listings. |
+| `includeHidden` | boolean | No | `false` | Include hidden/dot files and directories in listing |
+| `sortBy` | string | No | `"name"` | Sort order for directory entries: `name`, `size`, `date`, `type` (files first, then dirs) |
 
 ### Examples
 
@@ -217,14 +209,17 @@ GetItem(path="src/main.go", line=42)
 # Read lines 10-20 (inclusive)
 GetItem(path="src/main.go", startLine=10, endLine=20)
 
-# List directory recursively
-GetItem(path="src/", recursive=true)
+# List directory recursively with hidden files included
+GetItem(path="src/", recursive=true, includeHidden=true)
 
 # Metadata only (no content returned)
 GetItem(path="src/main.go", length=0)
 
 # Chunked read: bytes 512–768 from a large file
 GetItem(path="data.bin", offset=512, length=257)
+
+# Get detailed metadata
+GetItem(path="src/main.go", action="info")
 ```
 
 ### Common Errors
@@ -238,7 +233,7 @@ GetItem(path="data.bin", offset=512, length=257)
 
 ### Notes
 
-- The 10MB `MaxFileSize` limit applies specifically to **line-based reading** (`line`, `startLine/endLine`). Regular offset/length reading supports larger files up to the file's actual size.
+- The 10MB `MaxFileSize` limit applies specifically to **line-based reading** (`line`, `startLine/endLine`). Regular offset/length reading supports larger files.
 - Windows permission bits may not reflect actual writability (simulated on Windows)
 - Hidden files are skipped when includeHidden=false in directory listings
 - Hidden directories are skipped entirely (not their contents walked) during recursive listing
@@ -247,7 +242,7 @@ GetItem(path="data.bin", offset=512, length=257)
 
 ## 4. EditItem
 
-**Purpose:** Create and edit **TEXT** files and directories via line-based replacement (for binary/hex editing use ViewBinary). Returns structured JSON metadata alongside the text result for easy AI parsing.
+**Purpose:** Create and edit text files and directories via line-based replacement or create actions. Returns structured JSON metadata alongside the result for easy AI parsing.
 
 **Project Context Required:** Yes
 
@@ -256,26 +251,27 @@ GetItem(path="data.bin", offset=512, length=257)
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `path` | string | **Yes** | — | Target file or directory path (resolved against project root) |
-| `action` | string | No | `"edit"` | `edit`, `create` |
-| `content` | string | No | — | Content for `create` action |
-| `replacement` | string | No | — | New text to replace the specified line range with |
-| `startLine` | number | No | — | 1-based start line (inclusive) |
-| `endLine` | number | No | — | 1-based end line (inclusive; if omitted, equals startLine) |
+| `action` | string | No | `"edit"` | `edit` (line-based replacement on existing files), `create` (create new file/directory) |
+| `content` | string | No | — | Content for create action. Empty string creates an empty file. If omitted, same as content="". |
+| `replacement` | string | No | — | New text to replace the specified line range with. Takes precedence over content when both are provided. |
+| `startLine` | number | No | `1` | 1-based start line (inclusive). When omitted in edit mode, defaults to 1. For create: if only startLine is given, replaces a single line. |
+| `endLine` | number | No | — | 1-based end line (inclusive; when omitted with startLine given, equals startLine for single-line replacement). Supports sentinel value `-1` meaning "all remaining lines." |
 | `isFolder` | boolean | No | `false` | Create a directory instead of a file |
-| `recursive` | boolean | No | `false` | Delete directory contents recursively |
-| `ignoreMissing` | boolean | No | `true` | Return success if item already exists (create action) |
-| `overwrite` | boolean | No | `false` | Overwrite existing files or directories |
+| `recursive` | boolean | No | `false` | For directories: if true, delete all contents recursively when overwriting. Without it, non-empty directories return an error. |
+| `ignoreMissing` | boolean | No | `true` | Return success if item already exists (create action). Set to false during development to catch errors on missing items. |
+| `overwrite` | boolean | No | `false` | Overwrite existing files or directories. For create with isFolder=true: returns success when folder exists. |
 | `encoding` | string | No | `"utf-8"` | Text encoding: `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `cp1252`, `ascii` |
-| `showProgress` | boolean | No | `false` | Show progress for files ≥ 1 MB |
+| `showProgress` | boolean | No | `false` | Show progress indicators for files ≥ 1 MB (ProgressThreshold) |
 
 ### Actions
 
 #### edit (default)
 
-Replace lines in a file by 1-based line number range (line-based TEXT replacement; for binary/hex editing use ViewBinary). File's trailing newline is preserved. Returns structured JSON metadata at the end of the result.
+Replace lines in a file by 1-based line number range. File's trailing newline is preserved: if original file ends with `\n`, replacement text gets `\n` appended automatically; otherwise no `\n` is added. Returns structured JSON metadata at the end of the result.
 
-- If only `startLine` is given: replaces a single line (`endLine` defaults to `startLine`)
-- Trailing newline behavior: if original file ends with `\n`, replacement text gets `\n` appended automatically; otherwise no `\n` is added.
+- If only `startLine` is given (no content/replacement): replaces all lines from startLine to end
+- If both `startLine` and `endLine` are given: replaces lines in that range
+- When endLine is omitted but replacement text is provided: replaces a single line at startLine
 
 ```
 # Replace lines 5-10 (multi-line)
@@ -289,8 +285,8 @@ EditItem(path="src/main.go", startLine=42, replacement="// updated function")
 
 Create a new file or directory. Automatically creates parent directories. Returns structured JSON metadata at the end of the result.
 
-- Specify `action="create"` to explicitly request creation (not needed for files — edit is default).
-- For folders: set `isFolder=true`. (Works with both `action=edit` and `action=create`; parent directories are automatically created.)
+- Specify `action="create"` to explicitly request creation (edit action also works for creating files)
+- For folders: set `isFolder=true`. Parent directories are automatically created regardless of action type.
 
 ```
 # Create with content
@@ -298,6 +294,9 @@ EditItem(path="src/main.go", action="create", content="package main\n\nfunc main
 
 # Create a directory (also works with action="edit" + isFolder=true)
 EditItem(path="assets/images", action="create", isFolder=true)
+
+# Create empty file (no content at all, omit the parameter)
+EditItem(path="empty.txt", action="create")
 ```
 
 ### Parameter Notes
@@ -305,8 +304,9 @@ EditItem(path="assets/images", action="create", isFolder=true)
 | Note | Details |
 |------|---------|
 | `ignoreMissing` | Default: `true`. When creating, returns success if the item already exists (no error). Set to `false` during development to catch creation errors. |
+| Trailing newline | The trailing `\n` of a file is preserved regardless of edit or create action. If the original file ends with `\n`, replacement text gets `\n` appended automatically. |
 
-### Structured Metadata (re #4)
+### Structured Metadata
 
 All EditItem results include a JSON metadata block:
 
@@ -357,11 +357,11 @@ CloseProject()
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `command` | string | **Yes** | — | The command to execute |
-| `shell` | string | No | `cmd` (Windows) / `sh` (Unix) | Shell interpreter: `cmd`, `powershell`, `node`, `python`, `sh`, `bash`, `zsh` |
-| `timeout` | number | No | `30` | Timeout in seconds (must be > 0) |
-| `env` | string | No | — | Custom env vars: `"KEY=value;KEY2=value2"` |
-| `stream` | boolean | No | `false` | Streaming output for long-running commands |
+| `command` | string | **Yes** | — | The command to execute (syntax depends on the shell interpreter) |
+| `shell` | string | No | `cmd` (Windows) / `sh` (Unix) | Shell interpreter: `cmd`, `powershell`, `pwsh`, `node`, `python3`, `python`, `sh`, `bash`, `zsh` |
+| `timeout` | number | No | `30` | Timeout in seconds (must be > 0; negative/zero values default to 30) |
+| `env` | string | No | — | Custom env vars: `"KEY=value;KEY2=value2"` (semicolon or newline separated). Note: Variables set here are inherited by the child process. In PowerShell, access them via `$env:VAR` syntax. |
+| `stream` | boolean | No | `false` | For long-running commands: if true, uses streaming output via separate stdout/stderr buffers that are combined in the result. Output order may not be guaranteed for very long-running commands. Recommended for commands expected to run >10 seconds. |
 
 ### Auto-Set Environment Variables
 
@@ -379,12 +379,24 @@ CloseProject()
 | `124` | Timed out (standard GNU timeout code) |
 | `125` | Canceled |
 | `127` | Command not found |
-| Other | Command-specific |
+| Other | Exit code from the command itself |
+
+### Node.js Shell Mode Notes
+
+When using `shell="node"`, the command is executed as JavaScript **directly** (like `node -e`). For non-streaming mode, uses `-e` flag. For streaming mode, pipes code via stdin for reliable output on Windows with proper exit codes.
+
+```
+# Node.js executes JavaScript directly via node -e
+ExecShell(command="console.log('hello')", shell="node")
+
+# Python executes code directly via python -c (NOT through a shell)
+ExecShell(command="print([x for x in range(10)])", shell="python")
+```
 
 ### Examples
 
 ```
-# Basic command (Windows)
+# Basic command (Windows default: cmd /C <command>)
 ExecShell(command="dir /b", shell="cmd")
 
 # Streaming build
@@ -399,15 +411,15 @@ ExecShell(command="Get-Process", shell="powershell")
 # Node.js (executes JavaScript via node -e, no wrapper needed)
 ExecShell(command="console.log(require('fs').readdirSync('.'))", shell="node")
 
-# Python (Python code directly via python -c)
-ExecShell(command="print([x for x in range(10)])", shell="python")
+# Python (Python code directly via python3 -c)
+ExecShell(command="print([x for x in range(10)])", shell="python3")
 ```
 
 ### Cross-Platform Notes
 
 | Note | Details |
 |------|---------|
-| Default shell | `cmd` on Windows, `sh` on Unix-like systems |
+| Default shell | `cmd` on Windows, `sh` on Unix-like systems (varies by OS) |
 | Path separators | Forward slashes (`/`) work on all platforms |
 | Line endings | Output preserves original line endings (CRLF on Windows, LF on Unix) |
 
@@ -423,13 +435,14 @@ ExecShell(command='Write-Output "Hello World"', shell="powershell")
 # Complex command with mixed quotes (use powershell for complex quoting in cmd)
 ExecShell(command='echo "hello world" | Get-Member', shell="powershell")
 ```
+
 ---
 
 ## 7. GetURL
 
 **Purpose:** Fetch a URL with configurable HTTP options. The fetch operation does NOT require an open project context; however, saving the response to the project requires one (`saveToProject=true`).
 
-**Project Context Required:** No (required only when `saveToProject=true`)
+**Project Context Required:** No for fetching (required when `saveToProject=true`)
 
 ### Parameters
 
@@ -443,13 +456,13 @@ ExecShell(command='echo "hello world" | Get-Member', shell="powershell")
 | `userAgent` | string | No | — | User-Agent header value |
 | `body` | string | No | — | Request body (POST/PUT/PATCH only; ignored for GET/HEAD/DELETE) |
 | `timeout` | number | No | `30` | Request timeout in seconds |
-| `saveToProject` | boolean | No | `false` | Save response body to project directory |
-| `filename` | string | No | — | Custom filename for saved response (auto-generated from URL if omitted) |
+| `saveToProject` | boolean | No | `false` | Save response body to project directory. When true, the response body is NOT returned in the result. |
+| `filename` | string | No | — | Custom filename for saved response (auto-generated from URL if omitted). Sanitized: filepath.Base() removes directories and special chars, characters < > : replaced with -, spaces replaced with _.) |
 
 ### Supported URL Schemes
 
 - `http://` — Plain HTTP
-- `https://` — HTTPS (TLS with system CA certificates)
+- `https://` — HTTPS (TLS with system CA certificate bundle)
 
 ### Examples
 
@@ -473,20 +486,19 @@ GetURL(url="https://api.example.com/data", cookies="session=abc123; auth=xyz", u
 |------|---------|
 | Redirects | Followed automatically (up to 10 hops) |
 | TLS | Uses Go's default HTTP client: system CA certificate bundle — self-signed certificates will fail |
-| Proxy | No proxy support currently configured |
 | Content-Type | NOT set automatically for POST/PUT/PATCH — provide via headers if needed |
 
 ### Filename Generation (saveToProject)
 
-When `filename` is omitted, filename is auto-generated from URL: `host + path`. Characters sanitized (`:` → `-`, `< > | → -`, spaces → `_`). Example: `https://api.example.com/data.json` → `api.example.com-data.json`.
+When `filename` is omitted, filename is auto-generated from URL as `host + path`. Characters sanitized (`:` → `-`, `< > |` → `-`, spaces → `_`). Example: `https://api.example.com/data.json` → `api.example.com-data.json`.
 
 ---
 
 ## 8. ViewBinary
 
-**Purpose:** Display a hex dump of a binary file with configurable format and width options.
+**Purpose:** Display a hex dump of a binary file with configurable format and width options. Reads raw bytes — ideal for viewing images, executables, and other binary data. Requires an open project context (all paths resolved against open project root).
 
-**Project Context Required:** Yes (all paths resolved against open project root)
+**Project Context Required:** Yes
 
 ### Parameters
 
@@ -503,8 +515,8 @@ When `filename` is omitted, filename is auto-generated from URL: `host + path`. 
 
 | Format | Description |
 |--------|-------------|
-| `hex` (default) | Standard hex dump with ASCII preview, 16 bytes per row. Includes byte addresses. |
-| `raw` | Continuous hex string without spaces or columns — useful for copying to other tools. |
+| `hex` (default) | Standard hex dump with ASCII preview, 16 bytes per row by default. Includes byte addresses and header row showing column positions. |
+| `raw` | Continuous hex string without spaces or columns — useful for copying to other tools. One line of hex per `bytesPerRow`. |
 | `compact` | One line of hex per offset block (`offset: hex...`) — easy to read and compact. |
 
 ### Examples
@@ -544,32 +556,24 @@ ViewBinary(path="data.bin", bytesPerRow=32)
 
 ### Path Boundary Enforcement
 
-All file operations are confined to the active project directory. Paths outside the project boundary are rejected to prevent unauthorized access.
+All file operations are confined to the active project directory. Paths outside the project boundary are rejected to prevent unauthorized access. Thread-safe: uses `GetGlobalProjectSnapshot()` to avoid mutex violations.
 
 ### Project Name Validation
 
 Project names are validated to prevent path traversal attacks:
 - No `..` sequences
-- No leading dots
+- No leading dots (or on base name)
 - Alphanumeric characters, hyphens, underscores, and dots only
+- Maximum 64 characters
+- Windows paths (e.g., `E:\Projects\audit`) normalized to their final component
 
 ### Timeout Protection
 
-- Shell commands: Default 30-second timeout (configurable)
-- HTTP requests: Default 30-second timeout (configurable)
+- Shell commands: Default 30-second timeout (configurable via `timeout` parameter)
+- HTTP requests: Default 30-second timeout (configurable via `timeout` parameter)
 
----
+### HTTP Client Hardening
 
-## Constants Reference
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `MaxFileSize` | 10MB | Maximum single-file read size (10,485,760 bytes) |
-| `LargeFileThreshold` | 5MB | Threshold for chunked read hints (5,242,880 bytes) |
-| `MaxOutputLength` | 10000 bytes | Default output truncation limit |
-| `DefaultShellTimeout` | 30 seconds | Default shell command timeout |
-| `DefaultGetURLTimeout` | 30 seconds | Default HTTP request timeout |
-| `ProgressThreshold` | 1MB | Minimum file size for progress indicators (files ≥ this size show progress) |
-| `DefaultMaxItems` | 100 | Default max directory listing entries |
-
----
+- Maximum response body size limited to 50 MB to prevent unbounded memory usage on slow/dead connections
+- Redirects follow up to 10 hops maximum
+- URL scheme validation prevents SSRF attacks (only http/https allowed, other schemes rejected with error)

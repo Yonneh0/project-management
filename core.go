@@ -11,9 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -275,7 +273,7 @@ func RegisterTools(mcpServer *server.MCPServer, rootDir string) {
 		mcp.WithString("command", mcp.Required(), mcp.Description("The command to execute. Syntax depends on the shell interpreter selected.")),
 		mcp.WithString("shell", mcp.DefaultString("cmd"), mcp.Description("Shell interpreter: cmd (default on Windows, uses cmd /C), powershell/pwsh (PowerShell), node (Node.js -e [JavaScript code directly]), python/python3 (Python -c [Python code directly]), sh/bash/zsh (POSIX sh, default on Unix). Cross-platform: default shell varies by OS — \"cmd\" on Windows, \"sh\" on Unix-like systems.")),
 		mcp.WithNumber("timeout", mcp.DefaultNumber(DefaultShellTimeout), mcp.Description("Timeout in seconds (default: 30). Must be > 0. Negative/zero values are ignored and default to 30 seconds.")),
-		mcp.WithString("env", mcp.Description("Custom environment variables (format: \"KEY=value;KEY2=value2\" — semicolon or newline separated). Example: \"MY_VAR=hello;OTHER_VAR=world\". Note: Variables set here are inherited by the child process. In PowerShell, access them via $env:VAR syntax (e.g., $env:MY_VAR), not direct $VAR access. OS environment variables from the parent process are also inherited.")),
+		mcp.WithString("env", mcp.Description("Custom environment variables (format: \"KEY=value;KEY2=value2\" — semicolon or newline separated). Example: \"MY_VAR=hello;OTHER_VAR=world\". Note: Variables set here are inherited by the child process. In PowerShell, access them via $env:VAR syntax (e.g., $env:MY_VAR), not direct $VAR access.")),
 		mcp.WithBoolean("stream", mcp.DefaultBool(false), mcp.Description("For long-running commands (builds, compilations): if true, uses streaming output via separate stdout/stderr buffers that are combined in the output. Note: output order may not be guaranteed for long-running commands. Recommended for commands expected to run >10 seconds.")),
 	), toolHandlerWrapper(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return handleExecShell(ctx, req)
@@ -419,44 +417,6 @@ func handleListProjects(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallTool
 	return mcp.NewToolResultText(fmt.Sprintf("Found %d projects:\n\n%s", len(projectInfos), string(data))), nil
 }
 
-func getWindowsMemoryInfo() (totalPhys uint64, availPhys uint64) {
-	kernel32, err := syscall.LoadLibrary("kernel32.dll")
-	if err != nil {
-		return 0, 0
-	}
-	defer syscall.FreeLibrary(kernel32)
-
-	proc, err := syscall.GetProcAddress(kernel32, "GlobalMemoryStatusEx")
-	if err != nil {
-		return 0, 0
-	}
-
-	info := MEMORYSTATUSEX{DwLength: uint32(unsafe.Sizeof(MEMORYSTATUSEX{}))}
-	ret, _, _ := syscall.SyscallN(uintptr(proc), uintptr(unsafe.Pointer(&info)))
-	if ret != 0 {
-		return info.UllTotalPhys, info.UllAvailPhys
-	}
-	return 0, 0
-}
-
-func getEnvVars() map[string]string {
-	relevantVars := []string{
-		"PATH", "HOME", "USERPROFILE", "TEMP", "TMP",
-		"GOBIN", "GOPATH", "GOROOT", "NPM_CONFIG_PREFIX",
-		"PYTHONPATH", "PYTHONHOME", "DOTNET_CLI_HOME",
-		"WINDIR", "PROGRAMFILES", "PROGRAMFILES(X86)",
-		"PROGRAMDATA", "SYSTEMDRIVE", "SYSTEMROOT",
-	}
-
-	result := make(map[string]string)
-	for _, v := range relevantVars {
-		if val := os.Getenv(v); val != "" {
-			result[v] = val
-		}
-	}
-	return result
-}
-
 func tryGetVersion(name string) (string, string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {
@@ -560,7 +520,7 @@ func getDotNetSdkInfo() string {
 			infoLines = append(infoLines, fmt.Sprintf("    %s", strings.TrimSpace(line)))
 		}
 
-		if strings.Contains(lower, "base url:") || strings.Contains(lower, "microsoft visual") {
+		if strings.Contains(lower, ".net runtimes:") || strings.Contains(lower, "microsoft visual") {
 			break
 		}
 	}
@@ -583,53 +543,6 @@ func getSystemResources() []string {
 	result = append(result, fmt.Sprintf("  OS: %s/%s", runtime.GOOS, runtime.GOARCH))
 	result = append(result, fmt.Sprintf("  CPUs: %d", runtime.NumCPU()))
 	result = append(result, fmt.Sprintf("  Goroutines: %d", runtime.NumGoroutine()))
-
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	result = append(result, fmt.Sprintf("  Memory Used: %s", humanReadableSize(int64(mem.Alloc))))
-
-	if runtime.GOOS == "windows" {
-		totalPhys, availPhys := getWindowsMemoryInfo()
-		if totalPhys > 0 && availPhys > 0 {
-			result = append(result, fmt.Sprintf("  Memory Total: %s", humanReadableSize(int64(totalPhys))))
-			result = append(result, fmt.Sprintf("  Memory Available: %s", humanReadableSize(int64(availPhys))))
-		} else {
-			result = append(result, fmt.Sprintf("  Memory Total: %s (fallback)", humanReadableSize(int64(mem.HeapSys))))
-			result = append(result, "  Memory Available: unknown")
-		}
-	} else {
-		result = append(result, "  Memory Total: unknown")
-		result = append(result, "  Memory Available: unknown")
-	}
-
-	if runtime.GOOS == "windows" {
-		kernel32 := syscall.NewLazyDLL("kernel32.dll")
-		getDiskFreeSpaceEx := kernel32.NewProc("GetDiskFreeSpaceExW")
-		dir, _ := os.Getwd()
-		pathPtr, err := syscall.UTF16PtrFromString(dir)
-		if err == nil {
-			var freeBytesAvailable, totalBytes, totalFreeBytes uint64
-			ret, _, _ := getDiskFreeSpaceEx.Call(
-				uintptr(unsafe.Pointer(pathPtr)),
-				uintptr(unsafe.Pointer(&freeBytesAvailable)),
-				uintptr(unsafe.Pointer(&totalBytes)),
-				uintptr(unsafe.Pointer(&totalFreeBytes)),
-			)
-			if ret != 0 {
-				result = append(result, fmt.Sprintf("  Disk Available: %s", humanReadableSize(int64(freeBytesAvailable))))
-				result = append(result, fmt.Sprintf("  Disk Total: %s", humanReadableSize(int64(totalBytes))))
-			} else {
-				result = append(result, "  Disk Available: unknown")
-				result = append(result, "  Disk Total: unknown")
-			}
-		} else {
-			result = append(result, "  Disk Available: unknown")
-			result = append(result, "  Disk Total: unknown")
-		}
-	} else {
-		result = append(result, "  Disk Available: unknown (Unix systems: use df command)")
-		result = append(result, "  Disk Total: unknown")
-	}
 
 	return result
 }
@@ -836,12 +749,6 @@ func GetSystemContextForOpenProject(rootDir string) string {
 	var sb strings.Builder
 
 	sb.WriteString("\n=== System Environment Context ===\n")
-
-	sb.WriteString("\nEnvironment Variables:\n")
-	envVars := getEnvVars()
-	for k, v := range envVars {
-		sb.WriteString(fmt.Sprintf("  %s=%s\n", k, v))
-	}
 
 	sb.WriteString("\nInstalled Tools:\n")
 	tools := getInstalledTools()

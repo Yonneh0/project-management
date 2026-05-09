@@ -441,13 +441,14 @@ func handleExecShell(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 			if err == nil {
 				execCmd = nodeCmd
 				go func() {
-					defer stdIn.Close()
+					defer stdIn.Close() // Closing stdin signals EOF to node so it finishes and reports exit code.
 					_, writeErr := stdIn.Write([]byte(command))
 					if writeErr != nil {
 						log.Printf("[ExecShell] stdin.Write failed: %v", writeErr)
 					}
 				}()
 			} else {
+				nodeCmd.Stdin = strings.NewReader(command) // fallback: pass via ReadWriter.
 				execCmd = nodeCmd
 			}
 		} else {
@@ -514,15 +515,14 @@ func handleExecShell(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	var errExec error
 
 	if stream {
-		// Streaming mode
+		// Streaming mode — combine stdout/stderr for a single output.
 		var stdoutBuf, stderrBuf strings.Builder
 		execCmd.Stdout = &stdoutBuf
 		execCmd.Stderr = &stderrBuf
-
 		errExec = execCmd.Run()
 		out = append([]byte(stdoutBuf.String()), []byte(stderrBuf.String())...)
 	} else {
-		// Buffered mode
+		// Buffered mode — CombinedOutput merges stdout+stderr.
 		out, errExec = execCmd.CombinedOutput()
 	}
 
@@ -537,38 +537,37 @@ func handleExecShell(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	}
 	sb.WriteString("\n")
 
-	// On success: return text result with exit code 0 and output
 	if errExec != nil {
-		// On failure: return error result with exit code and output
 		exitCode := -1
-		if ctx.Err() == context.DeadlineExceeded {
+
+		switch {
+		case ctx.Err() == context.DeadlineExceeded:
 			exitCode = 124 // Standard timeout exit code (GNU coreutils convention)
 			sb.WriteString("[Error: Command timed out — increase timeout parameter or optimize your command]\n")
-		} else if ctx.Err() == context.Canceled {
+		case ctx.Err() == context.Canceled:
 			exitCode = 125 // Standard tool error exit code
 			sb.WriteString("[Error: Command was canceled]\n")
-		} else {
+		default:
 			if exitErr, ok := errExec.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			} else {
-				// Treat generic errors with output as success (exit code 0).
-				// Some platforms report a non-zero error on normal completion when stdin closes;
-				// if stdout has content, this likely means the command executed successfully.
+				// Generic (non-ExitError) failure — always report it regardless of output.
+				// Some platforms return non-zero with normal output; others error on stdin close.
+				sb.WriteString(fmt.Sprintf("[Error: %v]\n", errExec))
 				exitCode = 1
-				if len(out) > 0 {
-					exitCode = 0
-				} else {
-					sb.WriteString(fmt.Sprintf("[Error: %v]\n", errExec))
-				}
 			}
 		}
+
 		sb.WriteString(fmt.Sprintf("Exit Code: %d\n", exitCode))
 		if len(out) > 0 {
 			sb.WriteString(fmt.Sprintf("Output:\n%s\n", string(out)))
+		} else {
+			sb.WriteString("Output: (empty)\n")
 		}
 		return mcp.NewToolResultError(sb.String()), nil
 	}
 
+	// Exit code 0 — success.
 	sb.WriteString("Exit Code: 0\n")
 	if len(out) > 0 {
 		if len(out) > MaxOutputLength {

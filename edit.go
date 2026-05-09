@@ -192,6 +192,7 @@ func handleEditFile(pathStr string, startLine *int, endLine *int, replacement st
 
 	fileDiff := generateFileDiff(filepath.Base(resolvedPath), lines[startLineVal-1:endLineVal], replacementLines, startLineVal, endLineVal)
 
+
 	// Encode content
 	writableContent, encodeErr := encodeToBytes(newContent, encoding)
 	if encodeErr != nil {
